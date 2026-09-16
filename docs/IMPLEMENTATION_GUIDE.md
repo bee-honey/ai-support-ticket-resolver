@@ -1,4 +1,4 @@
-AI Support Ticket Resolver
+# AI Support Ticket Resolver
 
 A RAG-powered assistant for grounded support ticket resolution and triage.
 
@@ -6,23 +6,23 @@ AI Support Ticket Resolver helps support engineers investigate and resolve new s
 
 Instead of acting as a generic chatbot, the system focuses on answering a more useful question:
 
-Have we seen this problem before, and how did we solve it?
+> Have we seen this problem before, and how did we solve it?
 
-⸻
+---
 
-Key Capabilities
+## Key Capabilities
 
 * 🔎 Similar Ticket Retrieval — Find previously resolved tickets that describe semantically similar issues.
 * 📚 Knowledge Base Retrieval — Search support documentation, troubleshooting guides, FAQs, and runbooks.
-* 🤖 Grounded Resolution Generation — Generate suggested resolutions using retrieved evidence rather than relying only on the LLM’s internal knowledge.
+* 🤖 Grounded Resolution Generation — Generate suggested resolutions using retrieved evidence rather than relying only on the LLM's internal knowledge.
 * 🔗 Source Attribution — Show the historical tickets and documentation supporting each suggested resolution.
 * ⚠️ Conflict & Staleness Detection — Warn when older documentation may conflict with newer support information.
 * 💬 Human Feedback — Allow support engineers to evaluate generated suggestions.
 * 📊 RAG Evaluation — Measure retrieval quality, groundedness, citation correctness, and overall response quality.
 
-⸻
+---
 
-Why This Project?
+## Why This Project?
 
 Support organizations accumulate valuable knowledge over time across:
 
@@ -38,13 +38,13 @@ A newly reported issue might describe the same underlying problem using complete
 
 For example:
 
-New ticket
+**New ticket**
 
-VPN stopped working after the user changed their corporate password.
+> VPN stopped working after the user changed their corporate password.
 
-Previously resolved ticket
+**Previously resolved ticket**
 
-Authentication failure occurs when cached VPN credentials no longer match the identity provider after a password reset.
+> Authentication failure occurs when cached VPN credentials no longer match the identity provider after a password reset.
 
 Traditional keyword search may struggle to connect these two issues.
 
@@ -52,10 +52,11 @@ Semantic retrieval using embeddings can identify their similarity and surface th
 
 The system can then provide the LLM with relevant historical evidence and generate a suggested resolution grounded in that information.
 
-⸻
+---
 
-High-Level Architecture
+## High-Level Architecture
 
+```mermaid
 flowchart TD
     UI["Streamlit UI"]
     API["FastAPI REST API"]
@@ -77,15 +78,17 @@ flowchart TD
     VECTOR --> DOCS
     RAG --> LLM
     LLM --> RS
+```
 
 The architecture intentionally keeps the frontend, application backend, and AI/RAG components separated.
 
-⸻
+---
 
-Request Flow
+## Request Flow
 
 A typical ticket-resolution request follows this path:
 
+```mermaid
 sequenceDiagram
     participant User
     participant UI as Streamlit
@@ -105,13 +108,15 @@ sequenceDiagram
     Service-->>API: Resolution + sources
     API-->>UI: Response
     UI-->>User: Display resolution & evidence
+```
 
-⸻
+---
 
-RAG Pipeline
+## RAG Pipeline
 
 The initial implementation intentionally uses a straightforward RAG pipeline rather than an agentic workflow.
 
+```mermaid
 flowchart LR
     A["New Support Ticket"]
     B["Create Embedding"]
@@ -133,35 +138,38 @@ flowchart LR
     G --> H
     H --> I
     I --> J
+```
 
 The goal is to keep the first implementation understandable, measurable, and reliable before introducing more complex orchestration.
 
-⸻
+---
 
-Tech Stack
+## Tech Stack
 
-Area	Technology
-Language	Python
-Frontend	Streamlit
-Backend API	FastAPI
-ASGI Server	Uvicorn
-Application Database	SQLite
-ORM	SQLAlchemy
-Validation	Pydantic
-RAG Framework	LangChain
-Vector Database	ChromaDB
-Retrieval	Embeddings / Semantic Search
-Generation	LLM
-Evaluation	RAG retrieval & response evaluation
+| Area | Technology |
+|---|---|
+| Language | Python |
+| Frontend | Streamlit |
+| Backend API | FastAPI |
+| ASGI Server | Uvicorn |
+| Application Database | SQLite |
+| ORM | SQLAlchemy |
+| Validation | Pydantic |
+| RAG Framework | LangChain |
+| Vector Database | ChromaDB |
+| Retrieval | Embeddings / Semantic Search |
+| Generation | LLM |
+| Evaluation | RAG retrieval & response evaluation |
 
-⸻
+---
 
-Frontend / Backend Separation
+## Frontend / Backend Separation
 
 Streamlit acts purely as the frontend client.
 
 It does not directly access SQLite, ChromaDB, or the RAG implementation.
 
+```mermaid
 flowchart LR
     UI["Streamlit"]
     API["FastAPI"]
@@ -174,18 +182,19 @@ flowchart LR
     SERVICE --> SQL
     SERVICE --> RAG
     RAG --> CHROMA
+```
 
 This keeps the frontend replaceable.
 
 For example, Streamlit could eventually be replaced with React or another UI without requiring changes to the core backend.
 
-⸻
+---
 
-Data Storage
+## Data Storage
 
 The application uses SQLite and ChromaDB for different purposes.
 
-SQLite
+### SQLite
 
 SQLite stores application state such as:
 
@@ -199,6 +208,7 @@ SQLite stores application state such as:
 
 Example:
 
+```
 Ticket
 ────────────────────
 id
@@ -208,8 +218,9 @@ priority
 status
 created_at
 updated_at
+```
 
-ChromaDB
+### ChromaDB
 
 ChromaDB stores embedded knowledge used by the retrieval pipeline.
 
@@ -223,19 +234,22 @@ This includes:
 
 Documents can include metadata such as:
 
+```json
 {
   "source_type": "resolved_ticket",
   "ticket_id": "INC-1234",
   "product": "VPN",
   "created_at": "2026-08-14"
 }
+```
 
 Metadata can later be used for filtering, source attribution, and staleness detection.
 
-⸻
+---
 
-Project Structure
+## Project Structure
 
+```
 ai-support-ticket-resolver/
 │
 ├── frontend/
@@ -296,72 +310,79 @@ ai-support-ticket-resolver/
 ├── requirements.txt
 ├── docker-compose.yml
 └── README.md
+```
 
-⸻
+---
 
-Initial API Design
+## Initial API Design
 
 The backend exposes REST APIs through FastAPI.
 
-Health Check
+### Health Check
 
-GET /health
+`GET /health`
 
-Create Ticket
+### Create Ticket
 
-POST /api/v1/tickets
+`POST /api/v1/tickets`
 
 Example request:
 
+```json
 {
   "title": "VPN connection fails",
   "description": "User receives an authentication error after resetting their password.",
   "priority": "medium"
 }
+```
 
 Example response:
 
+```json
 {
   "id": 101,
   "title": "VPN connection fails",
   "status": "open",
   "priority": "medium"
 }
+```
 
-List Tickets
+### List Tickets
 
-GET /api/v1/tickets
+`GET /api/v1/tickets`
 
-Get Ticket
+### Get Ticket
 
-GET /api/v1/tickets/{ticket_id}
+`GET /api/v1/tickets/{ticket_id}`
 
-Resolve Ticket
+### Resolve Ticket
 
-POST /api/v1/tickets/{ticket_id}/resolve
+`POST /api/v1/tickets/{ticket_id}/resolve`
 
 Runs the RAG pipeline and generates a grounded suggested resolution.
 
-Find Similar Tickets
+### Find Similar Tickets
 
-GET /api/v1/tickets/{ticket_id}/similar
+`GET /api/v1/tickets/{ticket_id}/similar`
 
 Returns semantically similar historical tickets.
 
-Submit Feedback
+### Submit Feedback
 
-POST /api/v1/tickets/{ticket_id}/feedback
+`POST /api/v1/tickets/{ticket_id}/feedback`
 
 Stores user feedback about the generated resolution.
 
-⸻
+---
 
-Example Resolution
+## Example Resolution
 
 A future response from the system may look similar to:
 
+```
 Ticket #101
 VPN authentication fails after password reset.
+
 Suggested Resolution
 ────────────────────────────────────────
 1. Clear cached VPN credentials.
@@ -369,41 +390,48 @@ Suggested Resolution
 3. Restart the VPN client.
 4. Re-enroll the device if authentication
    continues to fail.
+
 Supporting Evidence
 ────────────────────────────────────────
 INC-821
 VPN authentication failure after password reset
 Similarity: 92%
+
 INC-771
 Cached credentials causing VPN login failure
 Similarity: 87%
+
 Documentation
 VPN Authentication Troubleshooting Guide
+
 Potential Conflict
 ────────────────────────────────────────
 ⚠ Older documentation recommends resetting the
 local VPN certificate.
 Recent resolved tickets indicate that device
 re-enrollment has replaced this procedure.
+```
 
 The objective is not simply to produce an answer, but to show why the answer was generated.
 
-⸻
+---
 
-Development Roadmap
+## Development Roadmap
 
-Milestone 1 — Application Foundation
+### Milestone 1 — Application Foundation
 
 Build the first end-to-end vertical slice:
 
+```mermaid
 flowchart LR
     UI["Streamlit"]
     API["FastAPI"]
     DB[("SQLite")]
     UI --> API
     API --> DB
+```
 
-Deliverables
+**Deliverables**
 
 * Repository setup
 * Python environment
@@ -417,16 +445,17 @@ Deliverables
 * Basic Streamlit UI
 * Streamlit → FastAPI communication
 
-Success Criteria
+**Success Criteria**
 
 A user can create a ticket from Streamlit, FastAPI receives the request, and the ticket is persisted in SQLite.
 
-⸻
+---
 
-Milestone 2 — Knowledge Base & Retrieval
+### Milestone 2 — Knowledge Base & Retrieval
 
 Build the RAG knowledge base.
 
+```mermaid
 flowchart LR
     T["Resolved Tickets"]
     D["Support Docs"]
@@ -437,8 +466,9 @@ flowchart LR
     D --> C
     C --> E
     E --> V
+```
 
-Deliverables
+**Deliverables**
 
 * Synthetic resolved-ticket dataset
 * Synthetic support documentation
@@ -450,16 +480,17 @@ Deliverables
 * Semantic retrieval
 * Similar-ticket search
 
-Success Criteria
+**Success Criteria**
 
 Given a support issue, the system retrieves relevant historical tickets and support documentation.
 
-⸻
+---
 
-Milestone 3 — Grounded Resolution Generation
+### Milestone 3 — Grounded Resolution Generation
 
 Connect retrieval to the LLM.
 
+```mermaid
 flowchart LR
     T["New Ticket"]
     R["Retriever"]
@@ -472,8 +503,9 @@ flowchart LR
     C --> P
     P --> L
     L --> O
+```
 
-Deliverables
+**Deliverables**
 
 * LangChain retrieval pipeline
 * Prompt templates
@@ -484,17 +516,17 @@ Deliverables
 * Resolve Ticket API
 * Resolution UI
 
-Success Criteria
+**Success Criteria**
 
 A support engineer can request an AI-generated resolution that is grounded in retrieved support knowledge.
 
-⸻
+---
 
-Milestone 4 — Reliability
+### Milestone 4 — Reliability
 
-Improve the system’s ability to recognize uncertainty and conflicting information.
+Improve the system's ability to recognize uncertainty and conflicting information.
 
-Deliverables
+**Deliverables**
 
 * Conflict detection
 * Documentation staleness detection
@@ -504,13 +536,13 @@ Deliverables
 
 The system should prefer:
 
-“There is not enough supporting evidence to recommend a resolution.”
+> "There is not enough supporting evidence to recommend a resolution."
 
 over confidently generating an unsupported answer.
 
-⸻
+---
 
-Milestone 5 — Evaluation
+### Milestone 5 — Evaluation
 
 Evaluate both retrieval and generation quality.
 
@@ -535,29 +567,26 @@ Experiments can compare:
 
 The goal is to make changes based on measured RAG performance, not just subjective output quality.
 
-⸻
+---
 
-Current Scope
+## Current Scope
 
 The core capstone focuses on building a reliable RAG application.
 
-Ticket
-   ↓
-Retrieve
-   ↓
-Generate
-   ↓
-Ground
-   ↓
-Explain
-   ↓
-Evaluate
+```mermaid
+flowchart TD
+    A["Ticket"] --> B["Retrieve"]
+    B --> C["Generate"]
+    C --> D["Ground"]
+    D --> E["Explain"]
+    E --> F["Evaluate"]
+```
 
 The initial implementation intentionally does not require agents.
 
-⸻
+---
 
-Future / Stretch Goals
+## Future / Stretch Goals
 
 Once the core RAG application is complete and evaluated, possible extensions include:
 
@@ -577,26 +606,28 @@ Once the core RAG application is complete and evaluated, possible extensions inc
 
 These are potential extensions and are not dependencies for the initial implementation.
 
-⸻
+---
 
-Team Development
+## Team Development
 
 The project is designed so multiple contributors can work in parallel.
 
-Workstream	Responsibilities
-Platform / Backend	FastAPI, SQLite, SQLAlchemy, REST APIs
-Frontend	Streamlit, ticket creation, ticket views, resolution UI
-RAG / Knowledge Base	Data, chunking, embeddings, ChromaDB, retrieval
-AI / Evaluation	Prompting, LangChain pipeline, grounding, evaluation
+| Workstream | Responsibilities |
+|---|---|
+| Platform / Backend | FastAPI, SQLite, SQLAlchemy, REST APIs |
+| Frontend | Streamlit, ticket creation, ticket views, resolution UI |
+| RAG / Knowledge Base | Data, chunking, embeddings, ChromaDB, retrieval |
+| AI / Evaluation | Prompting, LangChain pipeline, grounding, evaluation |
 
 API contracts and shared data models should be agreed upon before parallel implementation begins.
 
-⸻
+---
 
-First Development Target
+## First Development Target
 
 Before introducing LangChain or LLM calls, the first target is:
 
+```mermaid
 flowchart LR
     A["Create Ticket"]
     B["Streamlit"]
@@ -607,8 +638,9 @@ flowchart LR
     B -->|"POST /tickets"| C
     C --> D
     D --> E
+```
 
-Definition of Done
+### Definition of Done
 
 * Repository created
 * Python project initialized
@@ -623,9 +655,9 @@ Definition of Done
 
 Once this works end-to-end, the RAG implementation begins.
 
-⸻
+---
 
-Definition of Capstone Success
+## Definition of Capstone Success
 
 A successful final demo should allow a user to:
 
@@ -640,9 +672,9 @@ A successful final demo should allow a user to:
 9. Provide feedback on the generated resolution.
 10. Demonstrate measurable retrieval and response quality.
 
-⸻
+---
 
-Guiding Principle
+## Guiding Principle
 
 Build the smallest complete system first.
 
