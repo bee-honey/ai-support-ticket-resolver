@@ -1,172 +1,328 @@
 # AI Support Ticket Resolver
 
-A RAG-powered assistant that helps support teams resolve tickets faster by grounding suggested resolutions in historical tickets and internal documentation, instead of starting each investigation from scratch.
+A RAG-powered assistant that searches historical support tickets and support documentation to suggest grounded resolutions, with sources, for new support problems.
 
-> **Status:** 🚧 Early stage — this repo currently holds the architecture and implementation plan. Code is being built out milestone by milestone (see [Roadmap](#roadmap) below).
+> **Status:** Phase 1 implemented — RAG ingestion pipeline + Streamlit chatbot. See [Phase 2](#phase-2-not-implemented) for what's deliberately deferred.
 
 ## Table of Contents
 
 - [Overview](#overview)
+- [Phase 1 Scope](#phase-1-scope)
 - [Architecture](#architecture)
-- [Tech Stack](#tech-stack)
-- [Data Responsibilities](#data-responsibilities)
-- [Roadmap](#roadmap)
-- [Planned Architecture (Phase 2)](#planned-architecture-phase-2)
-- [Success Criteria](#success-criteria)
-- [Getting Started](#getting-started)
-- [Contributing](#contributing)
-- [License](#license)
+- [Data Ingestion Flow](#data-ingestion-flow)
+- [Embedded Content vs. Metadata](#embedded-content-vs-metadata)
+- [Project Structure](#project-structure)
+- [Setup](#setup)
+- [Ingesting Data](#ingesting-data)
+- [Running Streamlit](#running-streamlit)
+- [Running Tests](#running-tests)
+- [Adjusting for the Real Mesos CSV](#adjusting-for-the-real-mesos-csv)
+- [Phase 2 (Not Implemented)](#phase-2-not-implemented)
+- [Assumptions](#assumptions)
 
 ## Overview
 
-Support teams often spend significant time investigating issues that have already been resolved elsewhere — the fix exists somewhere in a past ticket or a runbook, but finding it is slow. The Support Ticket Resolver addresses this by retrieving relevant historical tickets and documentation for a new ticket, then using an LLM to produce a resolution grounded in that retrieved evidence, along with the sources it drew on.
+Support engineers often re-investigate problems that were already solved in a past ticket or documented in a runbook — the fix exists, but finding it is slow, and a new ticket rarely uses the same wording as the old one. This project retrieves semantically similar historical tickets and documentation for a new support problem, then asks an LLM to produce a resolution **grounded in that retrieved evidence**, along with the sources it drew on.
+
+## Phase 1 Scope
+
+Phase 1 is the RAG foundation only, with a simple Streamlit chatbot as the UI:
+
+```
+Data Sources (CSV / PDF / Markdown / TXT)
+    → Document Loaders
+    → Normalization
+    → Chunking
+    → Embeddings
+    → ChromaDB
+    → Retriever
+    → RAG Service
+    → LLM
+    → Grounded answer + sources
+```
+
+Deliberately **not** in Phase 1: FastAPI, a ticket database (PostgreSQL/SQLite), LangGraph, agents, MCP, duplicate/conflict detection. See [Phase 2](#phase-2-not-implemented).
 
 ## Architecture
 
-The core (current) pipeline is a retrieval-augmented generation flow: historical tickets and runbooks are ingested into a vector store, and a new ticket is resolved by retrieving similar evidence and passing it to an LLM.
-
 ```mermaid
 flowchart TD
-    subgraph SD["Synthetic Data"]
-        RT["Resolved Tickets<br/>(JSON / Markdown)"]
-        RB["Runbooks<br/>(Markdown / PDF)"]
+    subgraph UI_Layer["UI"]
+        ST["Streamlit (ui/streamlit_app.py)"]
+    end
+    subgraph Service_Layer["Services"]
+        RAGSvc["RAGService (app/rag)"]
+        RetrieverSvc["Retriever (app/retrieval)"]
+    end
+    subgraph AI_Layer["AI / Data"]
+        EmbSvc["EmbeddingService (app/embeddings)"]
+        VSSvc["VectorStoreService (app/vectorstore)"]
+        Chroma[("ChromaDB")]
+        OpenAI["OpenAI API"]
+    end
+    subgraph Ingestion_Layer["Ingestion (app/ingestion)"]
+        Loaders["CSV / PDF / Markdown / TXT loaders"]
+        Chunker["ChunkingService"]
     end
 
-    RT --> ING
-    RB --> ING
-
-    subgraph ING["Ingestion"]
-        direction TB
-        M["Metadata extraction"] --> C["Chunking"] --> E["Embeddings"]
-    end
-
-    ING --> DB[("ChromaDB")]
-
-    U["User / New Ticket"] --> QP["Query preprocessing"]
-    DB --> QP
-
-    QP --> R["Retrieval<br/>(Top-K candidates)"]
-    R --> RR["Optional reranking"]
-
-    RR --> ST["Similar tickets"]
-    RR --> RD["Relevant docs"]
-
-    ST --> CTX["Evidence / Context"]
-    RD --> CTX
-
-    CTX --> LLM["LLM"]
-    LLM --> GR["Grounded Response"]
-
-    GR --> RES["Resolution"]
-    GR --> TID["Ticket IDs"]
-    GR --> WARN["Warnings<br/>(outdated docs)"]
-
-    RES --> UI["Streamlit"]
-    TID --> UI
-    WARN --> UI
+    ST --> RAGSvc
+    RAGSvc --> RetrieverSvc
+    RAGSvc --> OpenAI
+    RetrieverSvc --> VSSvc
+    RetrieverSvc --> EmbSvc
+    EmbSvc --> OpenAI
+    VSSvc --> Chroma
+    Loaders --> Chunker --> VSSvc
 ```
 
-The system uses a frontend/backend split:
+Streamlit never talks to ChromaDB or OpenAI directly — it only calls `RAGService`:
 
-- **Frontend** — Streamlit application
-- **Backend** — FastAPI REST API
-- **Data layer** — SQLite (application state) and ChromaDB (semantic knowledge)
-- **AI layer** — LangChain-based RAG pipeline
+```
+GOOD:  Streamlit → RAGService → Retriever → VectorStoreService → ChromaDB
+BAD:   Streamlit → (Chroma calls, OpenAI calls scattered throughout)
+```
 
-## Tech Stack
+This boundary is what lets Streamlit be pointed at a FastAPI backend in Phase 2 without restructuring the RAG code — see [Phase 2](#phase-2-not-implemented).
 
-| Layer | Technology |
+## Data Ingestion Flow
+
+```mermaid
+flowchart LR
+    SRC["CSV / PDF / Markdown / TXT"] --> LOAD["Document Loaders<br/>(BaseDocumentLoader subclasses)"]
+    LOAD --> NORM["Normalization<br/>semantic vs metadata split, NaN handling"]
+    NORM --> CHUNK["Chunking<br/>(ChunkingService)"]
+    CHUNK --> EMB["Embeddings<br/>(EmbeddingService / OpenAI)"]
+    EMB --> STORE[("ChromaDB")]
+```
+
+Loader abstraction (`app/ingestion/base.py`):
+
+```
+BaseDocumentLoader
+        │
+        ├── TicketCSVLoader       (app/ingestion/csv_loader.py)
+        ├── PDFDocumentLoader     (app/ingestion/pdf_loader.py)
+        ├── MarkdownDocumentLoader(app/ingestion/markdown_loader.py)
+        └── TextDocumentLoader    (app/ingestion/text_loader.py)
+```
+
+Every loader returns a list of `Document(page_content, metadata)`. Everything after loading (chunking, embedding, storage) is source-agnostic. `app/ingestion/pipeline.py` picks a loader by file extension and runs the full load → chunk → embed → persist sequence; `scripts/ingest.py` is its CLI.
+
+Ingestion is **idempotent**: chunk IDs are derived deterministically from `ticket_id` (or `source_file`) + `chunk_index`, and writes use Chroma's `upsert`, so re-running ingestion on the same source updates existing vectors instead of duplicating them. Use `--reset` to fully clear a source's chunks first (e.g. after changing chunk size or column mapping).
+
+## Embedded Content vs. Metadata
+
+This separation is intentional and is enforced in `app/ingestion/csv_loader.py` and `app/ingestion/mapping.py`:
+
+| Goes into embedded text (semantic) | Goes into Chroma metadata (structured) |
 |---|---|
-| Frontend | Streamlit |
-| Backend API | FastAPI |
-| Application state | SQLite + SQLAlchemy |
-| Vector store | ChromaDB |
-| RAG pipeline | LangChain |
-| Data validation | Pydantic |
-| Generation | LLM (RAG-grounded) |
+| summary | ticket_id |
+| description | component |
+| comments | status |
+| resolution | issue_type |
+| | created_date, resolved_date |
 
-## Data Responsibilities
+Example:
 
-**SQLite** manages application state: tickets, resolutions, status, priority, feedback, and metadata such as timestamps.
-
-**ChromaDB** stores the semantic knowledge base: resolved historical tickets, support documentation, troubleshooting guides, runbooks, and FAQs, each with source-attribution metadata.
-
-## Roadmap
-
-Development proceeds through five milestones:
-
-1. **Application Foundation** — Streamlit, FastAPI, and SQLite integration
-2. **Knowledge Base** — document ingestion, chunking, and embeddings
-3. **RAG Resolution** — retrieval pipeline and LLM integration
-4. **Conflict Detection** — identifying potentially outdated or conflicting documentation
-5. **Evaluation** — measuring system effectiveness
-
-Advanced capabilities — LangGraph, autonomous agents, and MCP servers — are deliberately deferred until the core pipeline above proves reliable. That future direction is sketched out next.
-
-## Planned Architecture (Phase 2)
-
-Once the core RAG pipeline is solid, the plan is to evolve resolution into a multi-agent workflow: a triage step classifies the incoming ticket, a router directs retrieval, an evidence-sufficiency check decides whether to resolve automatically or ask a follow-up question, and a confidence check decides whether to hand off to a human.
-
-```mermaid
-flowchart TD
-    UT([User Ticket]) --> TA[Triage Agent<br/>classify issue<br/>severity<br/>product/module]
-    TA --> LR[LangGraph Router]
-    LR --> ST[Search old tickets<br/>Vector DB]
-    LR --> SD[Search docs<br/>Vector DB]
-    ST --> EA{Evidence Agent<br/>Are results sufficient?}
-    SD --> EA
-    EA -->|YES| RA[Resolution Agent]
-    EA -->|NO| AQ[Ask user question]
-    RA --> CD[Check conflicting documentation]
-    CD --> CC{Confidence check}
-    CC -->|HIGH| SF[Suggested fix]
-    CC -->|LOW| HE[Human escalation]
-    AQ --> HE
-    SF --> FR([Final response])
-
-    classDef entry fill:#e0e7ff,stroke:#4338ca,stroke-width:2px,color:#1e1b4b
-    classDef process fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#1e3a8a
-    classDef decision fill:#fef3c7,stroke:#d97706,stroke-width:1.5px,color:#78350f
-    classDef success fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
-    classDef escalate fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#7f1d1d
-
-    class UT entry
-    class TA,LR,ST,SD,RA,CD,AQ process
-    class EA,CC decision
-    class SF,FR success
-    class HE escalate
+```json
+{
+  "id": "MESOS-1234::chunk::0",
+  "document": "Title: Docker executor fails during startup\n\nProblem:\n...\n\nResolution:\n...",
+  "metadata": {
+    "ticket_id": "MESOS-1234",
+    "component": "docker",
+    "status": "Resolved",
+    "issue_type": "Bug",
+    "resolved_date": "2023-04-18",
+    "source_type": "csv",
+    "source_file": "sample_tickets.csv",
+    "chunk_index": 0
+  }
+}
 ```
 
-This phase is **not yet implemented** — it's documented here to make the intended direction clear before building it.
+Metadata is never embedded — it exists purely for filtering, citations, and display. NaN/empty CSV values are dropped rather than becoming the literal text `"nan"` in either the document or the metadata.
 
-## Success Criteria
+## Project Structure
 
-The system should let users:
+```
+ai-support-ticket-resolver/
+│
+├── app/
+│   ├── config/
+│   │   └── settings.py          # env-driven Settings (OPENAI_API_KEY, models, chunk size, ...)
+│   │
+│   ├── ingestion/
+│   │   ├── base.py              # BaseDocumentLoader, IngestionError, clean_text
+│   │   ├── mapping.py           # CSVFieldMapping (configurable column names)
+│   │   ├── csv_loader.py        # TicketCSVLoader
+│   │   ├── pdf_loader.py        # PDFDocumentLoader
+│   │   ├── markdown_loader.py   # MarkdownDocumentLoader
+│   │   ├── text_loader.py       # TextDocumentLoader
+│   │   ├── chunker.py           # ChunkingService
+│   │   └── pipeline.py          # IngestionPipeline (loader -> chunk -> embed -> persist)
+│   │
+│   ├── embeddings/
+│   │   └── service.py           # EmbeddingService (OpenAI embeddings)
+│   │
+│   ├── vectorstore/
+│   │   └── chroma_store.py      # VectorStoreService (all Chroma calls live here)
+│   │
+│   ├── retrieval/
+│   │   └── retriever.py         # Retriever (top-k + metadata filters)
+│   │
+│   ├── rag/
+│   │   ├── prompts.py           # prompt templates, separate from logic
+│   │   └── service.py           # RAGService.answer(question, filters)
+│   │
+│   └── models/
+│       └── schemas.py           # Document, RetrievedChunk, RAGSource, RAGResult
+│
+├── ui/
+│   └── streamlit_app.py         # chatbot UI, calls RAGService only
+│
+├── scripts/
+│   └── ingest.py                # CLI: python scripts/ingest.py --source <file>
+│
+├── data/
+│   └── sample/
+│       └── sample_tickets.csv   # synthetic Mesos-style ticket dataset
+│
+├── tests/
+│   ├── conftest.py              # fake embedding fixture, temp Chroma fixture
+│   ├── test_csv_loader.py
+│   ├── test_chunking.py
+│   ├── test_retrieval.py
+│   └── test_rag_service.py
+│
+├── chroma_db/                   # local persisted vector store (gitignored)
+├── .env.example
+├── .gitignore
+├── requirements.txt
+└── README.md
+```
 
-- create tickets
-- request AI-suggested resolutions grounded in retrieved information
-- view the supporting sources behind a suggestion
-- receive warnings about conflicting or outdated documentation
-- provide feedback on a resolution
+## Setup
 
-## Getting Started
-
-This project is still in the planning/early-build phase, so setup instructions will land here once the Application Foundation milestone is in place. In the meantime, the intended shape is:
+Requires **Python 3.11+** (this repo was validated on 3.12 — the `tokenizers` wheel a transitive dependency pulls in does not yet publish a 3.14 build; if `pip install` fails building `tokenizers` on your system, use 3.11/3.12/3.13).
 
 ```bash
-git clone https://github.com/bee-honey/ai-support-ticket-resolver.git
-cd ai-support-ticket-resolver
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+python3 -m venv .venv
+source .venv/bin/activate          # .venv\Scripts\activate on Windows
 pip install -r requirements.txt
+
+cp .env.example .env
+# then edit .env and set a real OPENAI_API_KEY
 ```
 
-You'll also need API keys (e.g. an LLM provider key) available as environment variables — typically via a local `.env` file (not committed to git) loaded with `python-dotenv`.
+## Ingesting Data
 
-## Contributing
+```bash
+python scripts/ingest.py --source data/sample/sample_tickets.csv
+```
 
-This is currently a solo learning/build project. Issues and suggestions are welcome once the codebase is further along.
+This works the same way for other source types once files exist:
 
-## License
+```bash
+python scripts/ingest.py --source docs/runbook.pdf
+python scripts/ingest.py --source docs/troubleshooting.md
+python scripts/ingest.py --source docs/faq.txt
+```
 
-TBD.
+Re-running ingestion on the same file is safe (upserts by deterministic ID). Pass `--reset` to clear that source's chunks first, e.g. after changing `CHUNK_SIZE`/`CHUNK_OVERLAP` or a CSV mapping:
+
+```bash
+python scripts/ingest.py --source data/sample/sample_tickets.csv --reset
+```
+
+## Running Streamlit
+
+```bash
+streamlit run ui/streamlit_app.py
+```
+
+Ask a support question in the chat box; optionally set a `component`/`status` filter in the sidebar. Answers show the grounded resolution plus an expandable list of source tickets. Requires a real `OPENAI_API_KEY` in `.env` — the app loads without one but shows a warning and will error on your first question.
+
+## Running Tests
+
+```bash
+pytest
+```
+
+Tests never call the real OpenAI API — `tests/conftest.py` provides a deterministic `FakeEmbeddingService`, and `RAGService`'s LLM client is mocked where prompt/response logic is tested. Coverage includes: CSV → Document conversion, semantic/metadata separation, NaN/malformed-row handling, configurable column mapping, chunk metadata preservation, vector store idempotency, metadata filtering, and RAG source deduplication / no-evidence fallback.
+
+## Adjusting for the Real Mesos CSV
+
+When the real dataset arrives, you should **not** need to touch ingestion code. Two options:
+
+**1. Inline override**, e.g. in a small script or notebook:
+
+```python
+from app.ingestion.mapping import CSVFieldMapping
+
+mapping = CSVFieldMapping().with_overrides(
+    metadata_fields={"ticket_id": "key", "component": "components", "resolved_date": "resolved"},
+)
+```
+
+**2. A JSON mapping file**, passed to the CLI:
+
+```json
+{
+  "metadata_fields": {
+    "ticket_id": "key",
+    "component": "components",
+    "resolved_date": "resolved"
+  }
+}
+```
+
+```bash
+python scripts/ingest.py --source data/mesos_tickets_real.csv --csv-mapping config/mesos_mapping.json --reset
+```
+
+Only fields you override need to be listed; everything else falls back to the default mapping in `app/ingestion/mapping.py`. If the real CSV is missing a column mapped to a *required* logical field (`ticket_id`, `summary` by default), `TicketCSVLoader` raises a clear `IngestionError` naming the missing column rather than silently ingesting broken data.
+
+## Phase 2 (Not Implemented)
+
+Phase 1 intentionally stops at a working RAG chatbot. The service boundaries above exist so these can be added later without rewriting retrieval/RAG logic:
+
+```mermaid
+flowchart TD
+    ST["Streamlit"] --> API["FastAPI"]
+    API --> TSvc["Ticket Service"]
+    API --> RAGSvc["RAG Service (unchanged)"]
+    TSvc --> PG[("PostgreSQL")]
+    RAGSvc --> Retr["Retriever (unchanged)"]
+    Retr --> Chroma[("ChromaDB")]
+```
+
+And further out:
+
+```mermaid
+flowchart TD
+    API2["FastAPI"] --> LG["LangGraph Agent"]
+    LG --> TT["Ticket Tool"]
+    LG --> RT["RAG Tool"]
+    LG --> OT["Other Tools<br/>(duplicate/conflict detection, MCP)"]
+    TT --> PG2[("PostgreSQL")]
+    RT --> Chroma2[("ChromaDB")]
+```
+
+Deliberately deferred:
+
+- FastAPI application layer + `POST/GET/PUT /tickets` CRUD
+- A ticket database (PostgreSQL)
+- LangGraph orchestration / agent & tool calling
+- Duplicate ticket detection
+- Conflict / outdated-resolution detection
+- MCP integrations
+
+`RAGService.answer(question, filters)` is the intended seam: callable from Streamlit today, from a FastAPI route tomorrow, or wrapped as a LangGraph tool/node later.
+
+## Assumptions
+
+- The real Mesos CSV's exact column names, and whether all expected fields (comments, resolution, etc.) are actually present, are unknown — ingestion is built around a configurable mapping specifically because of this.
+- A ticket's `summary` is duplicated into Chroma metadata (in addition to being embedded as part of the document text) purely so the UI/RAG sources can display a title without re-parsing `page_content`; it is not used for filtering.
+- `chunk_size=1200` / `chunk_overlap=150` (`.env.example`) are reasonable starting defaults, not a tuned/evaluated strategy.
+- Cosine similarity (via Chroma's `hnsw:space=cosine`) is used for the relevance score shown in retrieval results.
