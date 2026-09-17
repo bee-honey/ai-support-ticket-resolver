@@ -4,8 +4,21 @@ A RAG-powered assistant that searches historical support tickets and support doc
 
 > **Status:** Phase 1 implemented — RAG ingestion pipeline + Streamlit chatbot. See [Phase 2](#phase-2-not-implemented) for what's deliberately deferred.
 
+## Quickstart
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+cp .env.example .env   # then put a real OPENAI_API_KEY in .env
+python scripts/ingest.py --source data/sample/sample_tickets.csv
+streamlit run ui/streamlit_app.py
+pytest
+```
+
+Requires Python 3.11+; see [Setup](#setup) if `pip install` fails building `tokenizers` on your system (e.g. on brand-new Python releases without prebuilt wheels yet).
+
 ## Table of Contents
 
+- [Quickstart](#quickstart)
 - [Overview](#overview)
 - [Phase 1 Scope](#phase-1-scope)
 - [Architecture](#architecture)
