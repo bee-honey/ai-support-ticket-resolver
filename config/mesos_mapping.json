@@ -1,0 +1,10 @@
+{
+  "semantic_fields": {
+    "comments": "all_comments"
+  },
+  "metadata_fields": {
+    "ticket_id": "key",
+    "component": "components",
+    "created_date": "created"
+  }
+}
