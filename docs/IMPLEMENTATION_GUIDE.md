@@ -447,6 +447,8 @@ Phase 1 intentionally does not require agents, a ticket database, or an HTTP API
 
 ## Phase 2 (Deferred)
 
+> For the agentic side of Phase 2 specifically (LangGraph, tool calling, duplicate/conflict detection as agent nodes, MCP) in more depth, with a milestone-by-milestone learning path, see [AGENTIC_PHASE2_GUIDE.md](AGENTIC_PHASE2_GUIDE.md).
+
 ```mermaid
 flowchart TD
     ST["Streamlit"] --> API["FastAPI"]
