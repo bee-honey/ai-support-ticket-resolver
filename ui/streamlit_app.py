@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
@@ -38,13 +39,39 @@ def get_filter_options(_rag_service: RAGService, field: str) -> list[str]:
         return []
 
 
+@st.cache_data(ttl=300)
+def get_component_tag_index(_rag_service: RAGService) -> dict[str, list[str]]:
+    """Maps a single clean component tag (e.g. "docker") to every raw stored
+    `component` string that includes it (e.g. "docker;agent").
+
+    Tickets can list multiple components as one semicolon-joined string
+    (e.g. "agent;containerization;libprocess;stout"), which is unreadable as
+    a flat dropdown of ~100 combinations. Splitting it into tags for display,
+    then mapping a selected tag back to every raw string containing it, lets
+    the UI offer clean choices while still filtering with Chroma's exact-match
+    `where` (via `$in` over the matching raw strings).
+    """
+    try:
+        raw_values = _rag_service.retriever.vector_store.list_metadata_values("component")
+    except Exception:
+        return {}
+
+    index: dict[str, list[str]] = {}
+    for raw in raw_values:
+        for tag in (part.strip() for part in raw.split(";")):
+            if tag:
+                index.setdefault(tag, []).append(raw)
+    return index
+
+
 def render_source(source: RAGSource) -> str:
     title = source.ticket_id or source.source_file or "Unknown source"
     line1 = f"**{title}** — {source.summary}" if source.summary else f"**{title}**"
+    component_display = source.component.replace(";", ", ") if source.component else None
     details = " · ".join(
         f"{label}: {value}"
         for label, value in (
-            ("component", source.component),
+            ("component", component_display),
             ("status", source.status),
             ("resolved", source.resolved_date),
         )
@@ -68,9 +95,9 @@ ANY_OPTION = "(any)"
 with st.sidebar:
     st.header("Filters (optional)")
     rag_service = get_rag_service()
-    component_options = [ANY_OPTION, *get_filter_options(rag_service, "component")]
+    component_tag_index = get_component_tag_index(rag_service)
     status_options = [ANY_OPTION, *get_filter_options(rag_service, "status")]
-    component_filter = st.selectbox("Component", component_options)
+    component_tags = st.multiselect("Component", sorted(component_tag_index))
     status_filter = st.selectbox("Status", status_options)
     top_k = st.slider("Sources to retrieve", min_value=1, max_value=10, value=settings.default_top_k)
     if st.button("Show collection info"):
@@ -95,9 +122,10 @@ for turn in st.session_state.history:
 question = st.chat_input("Describe the support problem...")
 
 if question:
-    filters: dict[str, str] = {}
-    if component_filter != ANY_OPTION:
-        filters["component"] = component_filter
+    filters: dict[str, Any] = {}
+    if component_tags:
+        raw_matches = sorted({raw for tag in component_tags for raw in component_tag_index.get(tag, [])})
+        filters["component"] = {"$in": raw_matches}
     if status_filter != ANY_OPTION:
         filters["status"] = status_filter
 
