@@ -23,8 +23,10 @@ from app.models.schemas import Document, RetrievedChunk
 logger = logging.getLogger(__name__)
 
 # Chroma's telemetry client has a known incompatibility with recent posthog
-# versions that logs a noisy (harmless) warning on every call; silence it.
-logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.ERROR)
+# versions that logs a noisy (harmless) error on every call, even with
+# anonymized_telemetry=False. The message is itself logged at ERROR level, so
+# setLevel(ERROR) would still let it through -- disable the logger outright.
+logging.getLogger("chromadb.telemetry.product.posthog").disabled = True
 
 
 class VectorStoreService:
@@ -110,6 +112,21 @@ class VectorStoreService:
             score = (1.0 - distance) if distance is not None else None
             chunks.append(RetrievedChunk(text=doc_text, metadata=dict(metadata), score=score))
         return chunks
+
+    def list_metadata_values(self, field: str) -> list[str]:
+        """Distinct values stored for a metadata field (e.g. "component", "status").
+
+        Used to populate exact-match filter choices in the UI -- Chroma's
+        `where` filter is a case-sensitive exact match, so free-text filter
+        inputs are error-prone; offering the real stored values avoids that.
+        """
+        result = self._collection.get(include=["metadatas"])
+        values = {
+            metadata[field]
+            for metadata in result.get("metadatas", [])
+            if metadata and metadata.get(field)
+        }
+        return sorted(values)
 
     def delete_by_source(self, source_file: str) -> None:
         self._collection.delete(where={"source_file": source_file})

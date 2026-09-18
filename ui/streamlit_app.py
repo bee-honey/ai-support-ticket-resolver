@@ -26,6 +26,18 @@ def get_rag_service() -> RAGService:
     return RAGService()
 
 
+@st.cache_data(ttl=300)
+def get_filter_options(_rag_service: RAGService, field: str) -> list[str]:
+    # Chroma's `where` filter is an exact, case-sensitive match, so offering
+    # the real stored values (rather than free text) avoids silent
+    # zero-result filters from casing/typo mismatches (e.g. "resolved" vs
+    # the stored "Resolved").
+    try:
+        return _rag_service.retriever.vector_store.list_metadata_values(field)
+    except Exception:
+        return []
+
+
 def render_source(source: RAGSource) -> str:
     title = source.ticket_id or source.source_file or "Unknown source"
     line1 = f"**{title}** — {source.summary}" if source.summary else f"**{title}**"
@@ -51,10 +63,15 @@ if not settings.openai_api_key or settings.openai_api_key == "sk-changeme":
         icon="⚠️",
     )
 
+ANY_OPTION = "(any)"
+
 with st.sidebar:
     st.header("Filters (optional)")
-    component_filter = st.text_input("Component", placeholder="e.g. docker")
-    status_filter = st.text_input("Status", placeholder="e.g. Resolved")
+    rag_service = get_rag_service()
+    component_options = [ANY_OPTION, *get_filter_options(rag_service, "component")]
+    status_options = [ANY_OPTION, *get_filter_options(rag_service, "status")]
+    component_filter = st.selectbox("Component", component_options)
+    status_filter = st.selectbox("Status", status_options)
     top_k = st.slider("Sources to retrieve", min_value=1, max_value=10, value=settings.default_top_k)
     if st.button("Show collection info"):
         try:
@@ -79,10 +96,10 @@ question = st.chat_input("Describe the support problem...")
 
 if question:
     filters: dict[str, str] = {}
-    if component_filter.strip():
-        filters["component"] = component_filter.strip()
-    if status_filter.strip():
-        filters["status"] = status_filter.strip()
+    if component_filter != ANY_OPTION:
+        filters["component"] = component_filter
+    if status_filter != ANY_OPTION:
+        filters["status"] = status_filter
 
     with st.chat_message("user"):
         st.write(question)
