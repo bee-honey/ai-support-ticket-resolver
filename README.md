@@ -193,7 +193,8 @@ ai-support-ticket-resolver/
 │       └── schemas.py           # Document, RetrievedChunk, RAGSource, RAGResult
 │
 ├── ui/
-│   └── streamlit_app.py         # chatbot UI, calls RAGService only
+│   ├── streamlit_app.py         # chatbot UI, calls RAGService only (has a chat-model picker)
+│   └── pages/1_Evals.py         # Evals page: run, metrics, label, align (calls evals/ only)
 │
 ├── scripts/
 │   └── ingest.py                # CLI: python scripts/ingest.py --source <file>
@@ -285,6 +286,8 @@ python -m evals.align evals/results/<run>.jsonl   # 4. where do the judges disag
 python -m evals.judge_run evals/results/<run>.jsonl
 python -m evals.report evals/results/<run>.jsonl  # pass rates, latency p50/p95, tokens, failure reasons
 ```
+
+**In the UI:** `streamlit run ui/streamlit_app.py`, then open **Evals** in the sidebar. The tabs mirror the CLI steps: **Run** (edit the test set, pick the chat model and judge model, run), **Metrics** (pass-rate tiles, pass rate by query kind, latency/tokens, a trace inspector, and a "compare with" run selector that shows deltas), **Label** (blind pass/fail), and **Align** (judge vs your labels, plus an editor to tune a judge prompt and re-judge the run). Models offered in the pickers come from `AVAILABLE_MODELS` in `.env`.
 
 What is measured:
 

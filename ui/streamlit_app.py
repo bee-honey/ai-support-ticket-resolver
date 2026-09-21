@@ -15,16 +15,24 @@ import streamlit as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.config.settings import get_settings  # noqa: E402
+from app.config.settings import get_settings, model_choices  # noqa: E402
 from app.models.schemas import RAGResult, RAGSource  # noqa: E402
 from app.rag.service import RAGService  # noqa: E402
+from app.retrieval.retriever import Retriever  # noqa: E402
 
 st.set_page_config(page_title="Support Ticket Resolver", page_icon="🎫")
 
 
 @st.cache_resource
-def get_rag_service() -> RAGService:
-    return RAGService()
+def get_retriever() -> Retriever:
+    # One shared retriever (and Chroma client); switching the chat model only
+    # rebuilds the cheap LLM wrapper below, never the vector store connection.
+    return Retriever()
+
+
+@st.cache_resource
+def get_rag_service(chat_model: str) -> RAGService:
+    return RAGService(retriever=get_retriever(), chat_model=chat_model)
 
 
 @st.cache_data(ttl=300)
@@ -80,9 +88,10 @@ def render_source(source: RAGSource) -> str:
     return f"{line1}\n\n{details}" if details else line1
 
 
-def render_stats(result: RAGResult) -> str:
-    """One-line snapshot of response time and token usage."""
-    parts = [
+def render_stats(result: RAGResult, model: str | None = None) -> str:
+    """One-line snapshot of model, response time and token usage."""
+    parts = [f"🤖 {model}"] if model else []
+    parts += [
         f"⏱ {result.total_seconds:.1f}s "
         f"(retrieval {result.retrieval_seconds:.1f}s · generation {result.generation_seconds:.1f}s)"
     ]
@@ -107,8 +116,11 @@ if not settings.openai_api_key or settings.openai_api_key == "sk-changeme":
 ANY_OPTION = "(any)"
 
 with st.sidebar:
+    st.header("Model")
+    chat_models = model_choices(settings.chat_model)
+    chat_model = st.selectbox("Chat model", chat_models, index=chat_models.index(settings.chat_model))
+    rag_service = get_rag_service(chat_model)
     st.header("Filters (optional)")
-    rag_service = get_rag_service()
     component_tag_index = get_component_tag_index(rag_service)
     status_options = [ANY_OPTION, *get_filter_options(rag_service, "status")]
     component_tags = st.multiselect("Component", sorted(component_tag_index))
@@ -116,7 +128,7 @@ with st.sidebar:
     top_k = st.slider("Sources to retrieve", min_value=1, max_value=10, value=settings.default_top_k)
     if st.button("Show collection info"):
         try:
-            st.json(get_rag_service().retriever.vector_store.collection_info())
+            st.json(rag_service.retriever.vector_store.collection_info())
         except Exception as exc:  # e.g. collection not created yet
             st.error(f"Could not read collection info: {exc}")
 
@@ -128,7 +140,7 @@ for turn in st.session_state.history:
         st.write(turn["question"])
     with st.chat_message("assistant"):
         st.write(turn["answer"])
-        st.caption(render_stats(turn["result"]))
+        st.caption(render_stats(turn["result"], turn.get("model")))
         if turn["sources"]:
             with st.expander(f"Sources ({len(turn['sources'])})"):
                 for source in turn["sources"]:
@@ -150,18 +162,24 @@ if question:
     with st.chat_message("assistant"):
         with st.spinner("Retrieving evidence and generating a grounded answer..."):
             try:
-                result = get_rag_service().answer(question, k=top_k, filters=filters or None)
+                result = rag_service.answer(question, k=top_k, filters=filters or None)
             except Exception as exc:
                 st.error(f"Failed to generate an answer: {exc}")
                 result = None
 
         if result is not None:
             st.write(result.answer)
-            st.caption(render_stats(result))
+            st.caption(render_stats(result, chat_model))
             if result.sources:
                 with st.expander(f"Sources ({len(result.sources)})"):
                     for source in result.sources:
                         st.markdown(render_source(source))
             st.session_state.history.append(
-                {"question": question, "answer": result.answer, "sources": result.sources, "result": result}
+                {
+                    "question": question,
+                    "answer": result.answer,
+                    "sources": result.sources,
+                    "result": result,
+                    "model": chat_model,
+                }
             )
