@@ -14,7 +14,7 @@ from app.rag.service import StreamEvent
 
 UI = Path(__file__).resolve().parent.parent / "ui"
 CHAT = str(UI / "views" / "chat.py")
-APP = str(UI / "app.py")
+APP = str(UI / "resolver_support.py")
 
 ANSWER = "Suggested Resolution\n- restart docker"
 

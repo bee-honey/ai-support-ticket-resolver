@@ -10,7 +10,7 @@ A RAG-powered assistant that searches historical support tickets and support doc
 python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 cp .env.example .env   # then put a real OPENAI_API_KEY in .env
 python scripts/ingest.py --source data/sample/sample_tickets.csv
-streamlit run ui/app.py
+streamlit run ui/resolver_support.py
 pytest
 ```
 
@@ -62,7 +62,7 @@ Deliberately **not** in Phase 1: FastAPI, a ticket database (PostgreSQL/SQLite),
 ```mermaid
 flowchart TD
     subgraph UI_Layer["UI"]
-        ST["Streamlit (ui/app.py)"]
+        ST["Streamlit (ui/resolver_support.py)"]
     end
     subgraph Service_Layer["Services"]
         RAGSvc["RAGService (app/rag)"]
@@ -193,7 +193,7 @@ ai-support-ticket-resolver/
 │       └── schemas.py           # Document, RetrievedChunk, RAGSource, RAGResult
 │
 ├── ui/
-│   ├── app.py                   # entrypoint: page config, logo/header, navigation
+│   ├── resolver_support.py      # entrypoint: page config, logo/header, navigation
 │   ├── branding.py              # product name, logo, header
 │   ├── formatting.py            # response-metrics line (live + final)
 │   ├── assets/icon.svg          # logo
@@ -265,7 +265,7 @@ python scripts/ingest.py --source data/sample/sample_tickets.csv --reset
 ## Running Streamlit
 
 ```bash
-streamlit run ui/app.py
+streamlit run ui/resolver_support.py
 ```
 
 The app is called **Resolver Support**: a header with the logo on every page, and a sidebar with two pages, **Resolver** (the chatbot) and **Evals**. Brand accent colour lives in `.streamlit/config.toml`.
@@ -294,7 +294,7 @@ python -m evals.judge_run evals/results/<run>.jsonl
 python -m evals.report evals/results/<run>.jsonl  # pass rates, latency p50/p95, tokens, failure reasons
 ```
 
-**In the UI:** `streamlit run ui/app.py`, then open **Evals** in the sidebar. The tabs mirror the CLI steps: **Run** (edit the test set, pick the chat model and judge model, run), **Metrics** (pass-rate tiles, pass rate by query kind, latency/tokens, a trace inspector, and a "compare with" run selector that shows deltas), **Label** (blind pass/fail), and **Align** (judge vs your labels, plus an editor to tune a judge prompt and re-judge the run). Models offered in the pickers come from `AVAILABLE_MODELS` in `.env`.
+**In the UI:** `streamlit run ui/resolver_support.py`, then open **Evals** in the sidebar. The tabs mirror the CLI steps: **Run** (edit the test set, pick the chat model and judge model, run), **Metrics** (pass-rate tiles, pass rate by query kind, latency/tokens, a trace inspector, and a "compare with" run selector that shows deltas), **Label** (blind pass/fail), and **Align** (judge vs your labels, plus an editor to tune a judge prompt and re-judge the run). Models offered in the pickers come from `AVAILABLE_MODELS` in `.env`.
 
 What is measured:
 

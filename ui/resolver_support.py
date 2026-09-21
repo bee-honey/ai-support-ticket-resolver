@@ -1,6 +1,9 @@
 """Resolver Support -- Streamlit entrypoint.
 
-    streamlit run ui/app.py
+    streamlit run ui/resolver_support.py
+
+(Not named `app.py`: Streamlit puts this folder on sys.path, so a `ui/app.py`
+would shadow the `app/` package and break `import app.config`.)
 
 Owns everything shared across pages (page config, logo, header, navigation);
 each page lives in `ui/views/`. Pages contain NO Chroma/OpenAI calls of their

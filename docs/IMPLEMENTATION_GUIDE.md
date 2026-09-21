@@ -257,7 +257,7 @@ ai-support-ticket-resolver/
 │       └── schemas.py           # Document, RetrievedChunk, RAGSource, RAGResult
 │
 ├── ui/
-│   ├── app.py                   # entrypoint: page config, logo/header, navigation
+│   ├── resolver_support.py      # entrypoint: page config, logo/header, navigation
 │   └── views/chat.py            # chatbot UI, calls RAGService only
 │
 ├── scripts/

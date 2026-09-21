@@ -14,7 +14,7 @@ from typing import Any
 
 import streamlit as st
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo root (ui/views/chat.py)
 
 from app.config.settings import get_settings, model_choices  # noqa: E402
 from app.models.schemas import RAGResult, RAGSource  # noqa: E402
