@@ -16,7 +16,7 @@ import streamlit as st
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config.settings import get_settings  # noqa: E402
-from app.models.schemas import RAGSource  # noqa: E402
+from app.models.schemas import RAGResult, RAGSource  # noqa: E402
 from app.rag.service import RAGService  # noqa: E402
 
 st.set_page_config(page_title="Support Ticket Resolver", page_icon="🎫")
@@ -80,6 +80,20 @@ def render_source(source: RAGSource) -> str:
     return f"{line1}\n\n{details}" if details else line1
 
 
+def render_stats(result: RAGResult) -> str:
+    """One-line snapshot of response time and token usage."""
+    parts = [
+        f"⏱ {result.total_seconds:.1f}s "
+        f"(retrieval {result.retrieval_seconds:.1f}s · generation {result.generation_seconds:.1f}s)"
+    ]
+    if result.total_tokens is not None:
+        parts.append(
+            f"🔢 {result.total_tokens:,} tokens "
+            f"({result.input_tokens or 0:,} in · {result.output_tokens or 0:,} out)"
+        )
+    return "  ·  ".join(parts)
+
+
 st.title("🎫 Support Ticket Resolver")
 st.caption("Ask about a support problem. Answers are grounded in historical tickets and documentation.")
 
@@ -114,6 +128,7 @@ for turn in st.session_state.history:
         st.write(turn["question"])
     with st.chat_message("assistant"):
         st.write(turn["answer"])
+        st.caption(render_stats(turn["result"]))
         if turn["sources"]:
             with st.expander(f"Sources ({len(turn['sources'])})"):
                 for source in turn["sources"]:
@@ -142,10 +157,11 @@ if question:
 
         if result is not None:
             st.write(result.answer)
+            st.caption(render_stats(result))
             if result.sources:
                 with st.expander(f"Sources ({len(result.sources)})"):
                     for source in result.sources:
                         st.markdown(render_source(source))
             st.session_state.history.append(
-                {"question": question, "answer": result.answer, "sources": result.sources}
+                {"question": question, "answer": result.answer, "sources": result.sources, "result": result}
             )

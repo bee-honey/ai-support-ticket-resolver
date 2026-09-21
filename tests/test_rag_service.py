@@ -49,3 +49,31 @@ def test_prompt_sent_to_llm_includes_all_retrieved_ticket_ids():
     user_prompt = messages[1].content
     assert "T-1" in user_prompt
     assert "T-2" in user_prompt
+
+
+def test_result_reports_token_usage_and_timing_from_llm_metadata():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, llm = _make_service(chunks)
+    llm.invoke.return_value = MagicMock(
+        content="answer", usage_metadata={"input_tokens": 120, "output_tokens": 30, "total_tokens": 150}
+    )
+    result = service.answer("q")
+    assert (result.input_tokens, result.output_tokens, result.total_tokens) == (120, 30, 150)
+    assert result.retrieval_seconds >= 0
+    assert result.generation_seconds >= 0
+    assert result.total_seconds == result.retrieval_seconds + result.generation_seconds
+
+
+def test_token_usage_is_none_when_provider_does_not_report_it():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks)  # MagicMock response: usage_metadata is not a dict
+    result = service.answer("q")
+    assert result.input_tokens is None
+    assert result.total_tokens is None
+
+
+def test_no_evidence_result_has_retrieval_time_but_no_tokens():
+    service, _ = _make_service([])
+    result = service.answer("q")
+    assert result.generation_seconds == 0.0
+    assert result.total_tokens is None

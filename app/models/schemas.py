@@ -44,3 +44,20 @@ class RAGSource:
 class RAGResult:
     answer: str
     sources: list[RAGSource] = field(default_factory=list)
+    # Timing (seconds) and token usage for the response snapshot in the UI.
+    # Token counts are None when the provider doesn't report them or when no
+    # LLM call was made (e.g. the no-evidence short-circuit).
+    retrieval_seconds: float = 0.0
+    generation_seconds: float = 0.0
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+    @property
+    def total_seconds(self) -> float:
+        return self.retrieval_seconds + self.generation_seconds
+
+    @property
+    def total_tokens(self) -> int | None:
+        if self.input_tokens is None and self.output_tokens is None:
+            return None
+        return (self.input_tokens or 0) + (self.output_tokens or 0)
