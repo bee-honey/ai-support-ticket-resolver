@@ -51,6 +51,9 @@ class RAGResult:
     generation_seconds: float = 0.0
     input_tokens: int | None = None
     output_tokens: int | None = None
+    # The raw retrieved chunks (before per-ticket dedupe) -- the eval framework
+    # needs the exact evidence the LLM saw in order to judge it.
+    chunks: list[RetrievedChunk] = field(default_factory=list)
 
     @property
     def total_seconds(self) -> float:

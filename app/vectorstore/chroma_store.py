@@ -128,6 +128,17 @@ class VectorStoreService:
         }
         return sorted(values)
 
+    def get_chunks(self, filters: dict[str, Any] | None = None) -> list[RetrievedChunk]:
+        """All stored chunks matching an exact-match metadata filter (no similarity search).
+
+        Used by the eval framework to sample real tickets for query generation.
+        """
+        result = self._collection.get(where=self._build_where(filters), include=["documents", "metadatas"])
+        return [
+            RetrievedChunk(text=text, metadata=dict(metadata))
+            for text, metadata in zip(result.get("documents", []), result.get("metadatas", []))
+        ]
+
     def delete_by_source(self, source_file: str) -> None:
         self._collection.delete(where={"source_file": source_file})
         logger.info("Deleted chunks with source_file='%s' from '%s'", source_file, self.collection_name)

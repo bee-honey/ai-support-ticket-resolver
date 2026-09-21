@@ -28,6 +28,7 @@ class Settings:
     openai_api_key: str
     embedding_model: str
     chat_model: str
+    judge_model: str
     chroma_persist_dir: str
     chroma_collection_name: str
     chunk_size: int
@@ -41,6 +42,7 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
         chat_model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
+        judge_model=os.getenv("JUDGE_MODEL", "gpt-4o-mini"),
         chroma_persist_dir=os.getenv("CHROMA_PERSIST_DIR", "chroma_db"),
         chroma_collection_name=os.getenv("CHROMA_COLLECTION_NAME", "support_tickets"),
         chunk_size=_env_int("CHUNK_SIZE", 1200),

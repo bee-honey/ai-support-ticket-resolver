@@ -29,6 +29,7 @@ Requires Python 3.11+; see [Setup](#setup) if `pip install` fails building `toke
 - [Ingesting Data](#ingesting-data)
 - [Running Streamlit](#running-streamlit)
 - [Running Tests](#running-tests)
+- [Evaluation Framework](#evaluation-framework)
 - [Adjusting for the Real Mesos CSV](#adjusting-for-the-real-mesos-csv)
 - [Phase 2 (Not Implemented)](#phase-2-not-implemented)
 - [Assumptions](#assumptions)
@@ -201,6 +202,13 @@ ai-support-ticket-resolver/
 │   └── sample/
 │       └── sample_tickets.csv   # synthetic Mesos-style ticket dataset
 │
+├── evals/                       # evaluation framework (see "Evaluation Framework")
+│   ├── datasets/queries.jsonl   # the test set (generated draft, then hand-edited)
+│   ├── labels/                  # your human pass/fail labels (ground truth for the judges)
+│   ├── judges/                  # binary LLM judges + their editable prompts
+│   ├── generate_queries.py  run.py  judge_run.py  label.py  align.py  report.py  checks.py
+│   └── results/                 # one JSONL of traces per run (gitignored)
+│
 ├── tests/
 │   ├── conftest.py              # fake embedding fixture, temp Chroma fixture
 │   ├── test_csv_loader.py
@@ -263,6 +271,31 @@ pytest
 ```
 
 Tests never call the real OpenAI API — `tests/conftest.py` provides a deterministic `FakeEmbeddingService`, and `RAGService`'s LLM client is mocked where prompt/response logic is tested. Coverage includes: CSV → Document conversion, semantic/metadata separation, NaN/malformed-row handling, configurable column mapping, chunk metadata preservation, vector store idempotency, metadata filtering, and RAG source deduplication / no-evidence fallback.
+
+## Evaluation Framework
+
+Instead of eyeballing answers, `evals/` measures the resolver on a test set: deterministic checks, binary LLM judges, latency/tokens, and a step that aligns the judges with *your* verdicts. All commands run from the repo root and need a real `OPENAI_API_KEY`; models are parameters (`--chat-model`, `--judge-model`, default `gpt-4o-mini` via `CHAT_MODEL` / `JUDGE_MODEL`).
+
+```bash
+python -m evals.generate_queries --n 30     # 1. draft a test set from real tickets, then EDIT it by hand
+python -m evals.run                         # 2. answer every query; run checks + judges; print a report
+python -m evals.label evals/results/<run>.jsonl   # 3. label pass/fail with a short reason (judge verdicts hidden)
+python -m evals.align evals/results/<run>.jsonl   # 4. where do the judges disagree with you?
+# edit evals/judges/prompts/<metric>.md, then re-judge the SAME traces (your labels stay valid) and re-align:
+python -m evals.judge_run evals/results/<run>.jsonl
+python -m evals.report evals/results/<run>.jsonl  # pass rates, latency p50/p95, tokens, failure reasons
+```
+
+What is measured:
+
+| Layer | Metric | How |
+|---|---|---|
+| Retrieval | `retrieval_hit` (source ticket in top-k), `context_relevance` | code / LLM judge |
+| Answer | `faithfulness`, `answer_relevancy` | LLM judge (binary 0/1 + one-line reason) |
+| Behaviour | `citations_valid` (no invented ticket IDs), `abstention_correct`, `has_required_sections` | code |
+| Performance | latency (total / retrieval / generation), tokens, tool calls (empty until an agent exists) | measured |
+
+Notes: query kinds are `answerable`, `filtered` (asked with a metadata filter) and `unanswerable` (off-topic; the right behaviour is to abstain). Generated queries tend to echo their source ticket, so `retrieval_hit` on a generated set is optimistic until you reword some. `evals.run` executes queries one at a time so latency isn't skewed by concurrency; judging is parallel. `evals.generate_queries` refuses to overwrite an existing dataset without `--force`.
 
 ## Adjusting for the Real Mesos CSV
 

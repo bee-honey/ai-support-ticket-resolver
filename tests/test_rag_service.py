@@ -77,3 +77,13 @@ def test_no_evidence_result_has_retrieval_time_but_no_tokens():
     result = service.answer("q")
     assert result.generation_seconds == 0.0
     assert result.total_tokens is None
+
+
+def test_result_exposes_the_raw_retrieved_chunks_for_evals():
+    chunks = [
+        RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0}),
+        RetrievedChunk(text="b", metadata={"ticket_id": "T-1", "chunk_index": 1}),
+    ]
+    service, _ = _make_service(chunks)
+    result = service.answer("q")
+    assert result.chunks == chunks  # not deduped, unlike result.sources

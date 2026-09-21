@@ -100,6 +100,7 @@ class RAGService:
         return RAGResult(
             answer=answer_text,
             sources=_dedupe_sources(chunks),
+            chunks=chunks,
             retrieval_seconds=retrieval_seconds,
             generation_seconds=generation_seconds,
             input_tokens=input_tokens,
