@@ -87,3 +87,69 @@ def test_result_exposes_the_raw_retrieved_chunks_for_evals():
     service, _ = _make_service(chunks)
     result = service.answer("q")
     assert result.chunks == chunks  # not deduped, unlike result.sources
+
+
+# ---- streaming ---------------------------------------------------------------------------------
+
+
+def _stream_service(chunks, pieces):
+    """Service whose LLM `.stream()` yields `pieces` (objects with .content / .usage_metadata)."""
+    service, llm = _make_service(chunks)
+    llm.stream.return_value = iter(pieces)
+    return service, llm
+
+
+def _piece(text="", usage=None):
+    return MagicMock(content=text, usage_metadata=usage)
+
+
+def test_stream_answer_yields_retrieved_then_tokens_then_done_with_exact_usage():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    pieces = [_piece("Hel"), _piece("lo"), _piece("", usage={"input_tokens": 90, "output_tokens": 2, "total_tokens": 92})]
+    service, _ = _stream_service(chunks, pieces)
+
+    events = list(service.stream_answer("q"))
+
+    assert [e.kind for e in events] == ["retrieved", "token", "token", "done"]
+    assert events[0].chunks == 1 and events[0].seconds >= 0
+    assert "".join(e.text for e in events if e.kind == "token") == "Hello"
+    result = events[-1].result
+    assert result.answer == "Hello"
+    assert (result.input_tokens, result.output_tokens, result.total_tokens) == (90, 2, 92)
+    assert [s.ticket_id for s in result.sources] == ["T-1"] and result.chunks == chunks
+    assert result.generation_seconds >= 0 and result.retrieval_seconds >= 0
+
+
+def test_stream_answer_without_evidence_skips_the_llm():
+    service, llm = _stream_service([], [])
+    events = list(service.stream_answer("q"))
+    assert [e.kind for e in events] == ["retrieved", "done"]
+    assert events[0].chunks == 0 and events[-1].result.answer == NO_EVIDENCE_ANSWER
+    llm.stream.assert_not_called()
+
+
+def test_stream_answer_sends_the_same_prompt_as_answer():
+    chunks = [RetrievedChunk(text="Docker fix", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, llm = _stream_service(chunks, [_piece("x")])
+    list(service.stream_answer("what now"))
+    streamed = llm.stream.call_args[0][0]
+    service.answer("what now")
+    invoked = llm.invoke.call_args[0][0]
+    assert [m.content for m in streamed] == [m.content for m in invoked]
+
+
+def test_stream_answer_leaves_usage_none_when_the_provider_omits_it():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _stream_service(chunks, [_piece("hi")])
+    result = list(service.stream_answer("q"))[-1].result
+    assert result.total_tokens is None
+
+
+def test_stream_answer_propagates_llm_errors():
+    import pytest
+
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, llm = _make_service(chunks)
+    llm.stream.side_effect = RuntimeError("rate limited")
+    with pytest.raises(RuntimeError, match="rate limited"):
+        list(service.stream_answer("q"))

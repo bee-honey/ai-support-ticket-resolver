@@ -1,0 +1,3 @@
+# Brand accent only; light/dark follows the viewer's system setting.
+[theme]
+primaryColor = "#4F46E5"

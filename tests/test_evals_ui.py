@@ -21,7 +21,7 @@ from evals.schemas import (
     write_jsonl,
 )
 
-PAGE = str(Path(__file__).resolve().parent.parent / "ui" / "pages" / "1_Evals.py")
+PAGE = str(Path(__file__).resolve().parent.parent / "ui" / "views" / "evals.py")
 GOOD = "Suggested Resolution\n- fix\n\nSupporting Evidence\n- MESOS-1"
 
 

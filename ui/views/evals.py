@@ -59,9 +59,6 @@ METRIC_HELP = {
     "answer_relevancy": "Judge: the answer addresses the problem that was asked.",
 }
 
-st.set_page_config(page_title="Evals", page_icon="📊", layout="wide")
-
-
 @st.cache_resource
 def get_retriever() -> Retriever:
     return Retriever()
@@ -472,7 +469,7 @@ def render_align_tab(run_path: Path, traces: list[Trace], labels: dict[str, Huma
 
 # ------------------------------------------------------------------------------ page
 
-st.title("📊 Evals")
+st.caption("Measure answer quality, retrieval and latency on a test set, and check that the LLM judges agree with you.")
 
 if flash := st.session_state.pop("_flash", None):
     st.success(flash)

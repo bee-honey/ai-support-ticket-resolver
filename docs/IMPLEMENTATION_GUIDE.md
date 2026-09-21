@@ -257,7 +257,8 @@ ai-support-ticket-resolver/
 │       └── schemas.py           # Document, RetrievedChunk, RAGSource, RAGResult
 │
 ├── ui/
-│   └── streamlit_app.py         # chatbot UI, calls RAGService only
+│   ├── app.py                   # entrypoint: page config, logo/header, navigation
+│   └── views/chat.py            # chatbot UI, calls RAGService only
 │
 ├── scripts/
 │   └── ingest.py                # CLI: python scripts/ingest.py --source <file>

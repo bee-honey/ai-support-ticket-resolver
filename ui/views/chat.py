@@ -1,6 +1,6 @@
-"""Simple Streamlit chatbot for the Support Ticket Resolver.
+"""Chat page: ask a support question, get a grounded answer with sources.
 
-This UI contains NO Chroma/OpenAI calls of its own -- it only talks to
+This page contains NO Chroma/OpenAI calls of its own -- it only talks to
 `RAGService`. That boundary matters: in Phase 2, Streamlit can be pointed at
 a FastAPI backend instead, without this file's structure changing.
 """
@@ -8,6 +8,7 @@ a FastAPI backend instead, without this file's structure changing.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,13 @@ from app.config.settings import get_settings, model_choices  # noqa: E402
 from app.models.schemas import RAGResult, RAGSource  # noqa: E402
 from app.rag.service import RAGService  # noqa: E402
 from app.retrieval.retriever import Retriever  # noqa: E402
+from ui.formatting import format_live_stats, format_stats  # noqa: E402
 
-st.set_page_config(page_title="Support Ticket Resolver", page_icon="🎫")
+# Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
+PAINT_INTERVAL = 0.05
+
+# Keep the chat column readable on wide screens (the shared page layout is "wide" for the Evals tables).
+st.markdown("<style>.block-container{max-width:980px}</style>", unsafe_allow_html=True)
 
 
 @st.cache_resource
@@ -88,23 +94,7 @@ def render_source(source: RAGSource) -> str:
     return f"{line1}\n\n{details}" if details else line1
 
 
-def render_stats(result: RAGResult, model: str | None = None) -> str:
-    """One-line snapshot of model, response time and token usage."""
-    parts = [f"🤖 {model}"] if model else []
-    parts += [
-        f"⏱ {result.total_seconds:.1f}s "
-        f"(retrieval {result.retrieval_seconds:.1f}s · generation {result.generation_seconds:.1f}s)"
-    ]
-    if result.total_tokens is not None:
-        parts.append(
-            f"🔢 {result.total_tokens:,} tokens "
-            f"({result.input_tokens or 0:,} in · {result.output_tokens or 0:,} out)"
-        )
-    return "  ·  ".join(parts)
-
-
-st.title("🎫 Support Ticket Resolver")
-st.caption("Ask about a support problem. Answers are grounded in historical tickets and documentation.")
+st.caption("Describe a support problem. Answers are grounded in historical tickets and documentation.")
 
 settings = get_settings()
 if not settings.openai_api_key or settings.openai_api_key == "sk-changeme":
@@ -114,6 +104,11 @@ if not settings.openai_api_key or settings.openai_api_key == "sk-changeme":
     )
 
 ANY_OPTION = "(any)"
+
+
+def _toggle_collection_info() -> None:
+    st.session_state["show_collection_info"] = not st.session_state.get("show_collection_info", False)
+
 
 with st.sidebar:
     st.header("Model")
@@ -126,7 +121,13 @@ with st.sidebar:
     component_tags = st.multiselect("Component", sorted(component_tag_index))
     status_filter = st.selectbox("Status", status_options)
     top_k = st.slider("Sources to retrieve", min_value=1, max_value=10, value=settings.default_top_k)
-    if st.button("Show collection info"):
+    showing_info = st.session_state.get("show_collection_info", False)
+    st.button(
+        "Hide collection info" if showing_info else "Show collection info",
+        key="collection_info_button",
+        on_click=_toggle_collection_info,
+    )
+    if showing_info:
         try:
             st.json(rag_service.retriever.vector_store.collection_info())
         except Exception as exc:  # e.g. collection not created yet
@@ -140,7 +141,7 @@ for turn in st.session_state.history:
         st.write(turn["question"])
     with st.chat_message("assistant"):
         st.write(turn["answer"])
-        st.caption(render_stats(turn["result"], turn.get("model")))
+        st.caption(format_stats(turn["result"], turn.get("model")))
         if turn["sources"]:
             with st.expander(f"Sources ({len(turn['sources'])})"):
                 for source in turn["sources"]:
@@ -160,16 +161,46 @@ if question:
         st.write(question)
 
     with st.chat_message("assistant"):
-        with st.spinner("Retrieving evidence and generating a grounded answer..."):
-            try:
-                result = rag_service.answer(question, k=top_k, filters=filters or None)
-            except Exception as exc:
-                st.error(f"Failed to generate an answer: {exc}")
-                result = None
+        answer_slot = st.empty()
+        stats_slot = st.empty()  # live metrics while working, final snapshot when done
+        stats_slot.caption(format_live_stats(chat_model, "retrieving"))
+
+        result: RAGResult | None = None
+        text, tokens_out, retrieval_seconds = "", 0, 0.0
+        generation_started = last_paint = time.perf_counter()
+        try:
+            for event in rag_service.stream_answer(question, k=top_k, filters=filters or None):
+                if event.kind == "retrieved":
+                    retrieval_seconds = event.seconds
+                    generation_started = time.perf_counter()
+                elif event.kind == "token":
+                    text += event.text
+                    tokens_out += 1  # the API streams roughly one token per chunk
+                else:
+                    result = event.result
+                    continue
+                now = time.perf_counter()
+                if event.kind == "retrieved" or now - last_paint >= PAINT_INTERVAL:
+                    last_paint = now
+                    if text:
+                        answer_slot.markdown(text + "▌")
+                    stats_slot.caption(
+                        format_live_stats(
+                            chat_model,
+                            "generating",
+                            retrieval_seconds=retrieval_seconds,
+                            generation_seconds=now - generation_started,
+                            tokens_out=tokens_out,
+                        )
+                    )
+        except Exception as exc:
+            answer_slot.empty()
+            stats_slot.empty()
+            st.error(f"Failed to generate an answer: {exc}")
 
         if result is not None:
-            st.write(result.answer)
-            st.caption(render_stats(result, chat_model))
+            answer_slot.markdown(result.answer)
+            stats_slot.caption(format_stats(result, chat_model))
             if result.sources:
                 with st.expander(f"Sources ({len(result.sources)})"):
                     for source in result.sources:
