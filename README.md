@@ -282,6 +282,8 @@ Tests never call the real OpenAI API — `tests/conftest.py` provides a determin
 
 ## Evaluation Framework
 
+> For the full walkthrough (what each screen does, worked examples, known findings, FAQ), see [docs/EVALS_GUIDE.md](docs/EVALS_GUIDE.md). This section is the quick-start.
+
 Instead of eyeballing answers, `evals/` measures the resolver on a test set: deterministic checks, binary LLM judges, latency/tokens, and a step that aligns the judges with *your* verdicts. All commands run from the repo root and need a real `OPENAI_API_KEY`; models are parameters (`--chat-model`, `--judge-model`, default `gpt-4o-mini` via `CHAT_MODEL` / `JUDGE_MODEL`).
 
 ```bash
