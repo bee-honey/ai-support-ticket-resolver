@@ -107,6 +107,9 @@ def render_run_tab() -> None:
                 "kind": st.column_config.SelectboxColumn("kind", options=list(QUERY_KINDS), required=True),
                 "question": st.column_config.TextColumn("question", width="large"),
                 "filters": st.column_config.TextColumn("filters (JSON)", help='e.g. {"component": "docker"}'),
+                "expected_ticket_ids": st.column_config.TextColumn(
+                    "expected ticket(s)", help='Any one counts as a hit, e.g. "MESOS-1164; MESOS-1266"'
+                ),
             },
         )
         if st.button("Save test set"):

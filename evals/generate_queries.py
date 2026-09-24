@@ -11,7 +11,7 @@ How queries are made (cross product, one LLM call per query so they don't all rh
   - answerable / filtered: pick a real ticket (round-robin across components for
     coverage), pick a "shape" (pasted error, symptom, how-to, vague one-liner)
     and have the LLM write a *new* user report for that ticket's problem. The
-    source ticket becomes `expected_ticket_id`, which lets retrieval be scored
+    source ticket becomes `expected_ticket_ids`, which lets retrieval be scored
     without an LLM. Caveat: generated wording tends to echo the ticket, so
     hit@k on this set is optimistic -- reword some by hand.
   - unanswerable: a realistic support problem about a technology that is NOT
@@ -144,7 +144,7 @@ def generate_queries(
                 id="",
                 question=question,
                 kind="filtered" if is_filtered else "answerable",
-                expected_ticket_id=metadata["ticket_id"],
+                expected_ticket_ids=[metadata["ticket_id"]],
                 filters={"component": metadata["component"]} if is_filtered and metadata.get("component") else None,
                 notes=f"generated from {metadata['ticket_id']} ({shape}): {metadata.get('summary', '')}",
             )

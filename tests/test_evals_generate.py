@@ -52,9 +52,9 @@ def test_generate_queries_mix_ids_and_filters():
 
     for q in queries:
         if q.kind == "unanswerable":
-            assert q.expected_ticket_id is None and q.filters is None
+            assert q.expected_ticket_ids == [] and q.filters is None
         else:
-            assert q.expected_ticket_id.startswith("MESOS-")
+            assert q.expected_ticket_ids and q.expected_ticket_ids[0].startswith("MESOS-")
         if q.kind == "filtered":
             assert q.filters and set(q.filters) == {"component"}
 
@@ -64,7 +64,7 @@ def test_generation_is_reproducible_for_a_seed():
     llm.invoke.return_value = MagicMock(content="q")
     a = generate_queries(_corpus(), llm, 8, seed=7)
     b = generate_queries(_corpus(), llm, 8, seed=7)
-    assert [(q.id, q.kind, q.expected_ticket_id) for q in a] == [(q.id, q.kind, q.expected_ticket_id) for q in b]
+    assert [(q.id, q.kind, q.expected_ticket_ids) for q in a] == [(q.id, q.kind, q.expected_ticket_ids) for q in b]
 
 
 def test_dataset_jsonl_roundtrip(tmp_path):

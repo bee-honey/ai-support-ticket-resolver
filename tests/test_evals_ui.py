@@ -28,7 +28,7 @@ GOOD = "Suggested Resolution\n- fix\n\nSupporting Evidence\n- MESOS-1"
 def _trace(run_id: str, query_id: str, faithful: int, seconds: float = 2.0, kind: str = "answerable") -> Trace:
     trace = Trace(
         run_id=run_id, query_id=query_id, question=f"question {query_id}", kind=kind, chat_model="gpt-4o-mini",
-        top_k=5, expected_ticket_id="MESOS-1", answer=GOOD, context="[Evidence 1] ticket_id=MESOS-1\nfix it",
+        top_k=5, expected_ticket_ids=["MESOS-1"], answer=GOOD, context="[Evidence 1] ticket_id=MESOS-1\nfix it",
         retrieved_ticket_ids=["MESOS-1"], retrieval_seconds=0.2, generation_seconds=seconds - 0.2,
         total_seconds=seconds, input_tokens=100, output_tokens=20,
     )
@@ -198,6 +198,26 @@ def test_rows_to_queries_rejects_bad_input(row, message):
 def test_duplicate_ids_are_rejected():
     with pytest.raises(ValueError, match="unique"):
         rows_to_queries([{"id": "a", "question": "x"}, {"id": "a", "question": "y"}])
+
+
+def test_multiple_expected_ticket_ids_roundtrip_through_the_table_editor():
+    query = EvalQuery(id="a", question="q", expected_ticket_ids=["MESOS-1", "MESOS-2"], category="Triage - Duplicate")
+    rows = queries_to_rows([query])
+    assert rows[0]["expected_ticket_ids"] == "MESOS-1; MESOS-2"
+    assert rows[0]["category"] == "Triage - Duplicate"
+
+    back = rows_to_queries(rows)[0]
+    assert back.expected_ticket_ids == ["MESOS-1", "MESOS-2"] and back.category == "Triage - Duplicate"
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [("MESOS-1; MESOS-2", ["MESOS-1", "MESOS-2"]), ("MESOS-1,MESOS-2", ["MESOS-1", "MESOS-2"]),
+     ("MESOS-1", ["MESOS-1"]), ("", []), ("  ", [])],
+)
+def test_expected_ticket_ids_parses_semicolon_or_comma_separated_text(raw, expected):
+    queries = rows_to_queries([{"id": "a", "question": "q", "expected_ticket_ids": raw}])
+    assert queries[0].expected_ticket_ids == expected
 
 
 def test_model_choices_always_includes_the_current_model():

@@ -9,6 +9,7 @@ Everything the framework persists is one JSON object per line:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
@@ -26,9 +27,15 @@ class EvalQuery:
     id: str
     question: str
     kind: str = "answerable"
-    expected_ticket_id: str | None = None
+    # Any one of these counts as a hit (some tickets have more than one equally
+    # valid source, e.g. a duplicate-triage case citing the original ticket).
+    expected_ticket_ids: list[str] = field(default_factory=list)
     filters: dict[str, Any] | None = None
     notes: str = ""
+    # Free-text grouping from wherever the query came from (e.g. a human-authored
+    # sheet's "Triage - Duplicate" / "Stale doc" / "Abstain"). Purely informational --
+    # `kind` is what the checks/judges actually key off of.
+    category: str = ""
 
 
 @dataclass
@@ -47,8 +54,9 @@ class Trace:
     kind: str
     chat_model: str
     top_k: int | None
-    expected_ticket_id: str | None = None
+    expected_ticket_ids: list[str] = field(default_factory=list)
     filters: dict[str, Any] | None = None
+    category: str = ""
     answer: str = ""
     context: str = ""  # the evidence text exactly as the answering LLM saw it
     retrieved_ticket_ids: list[str] = field(default_factory=list)
@@ -139,7 +147,16 @@ def load_labels(path: str | Path) -> dict[str, HumanLabel]:
     return {row["trace_id"]: _from_dict(HumanLabel, row) for row in read_jsonl(path)}
 
 
-QUERY_COLUMNS = ["id", "question", "kind", "expected_ticket_id", "filters", "notes"]
+QUERY_COLUMNS = ["id", "question", "kind", "expected_ticket_ids", "filters", "category", "notes"]
+
+# `expected_ticket_ids` is a list in the data model but a single text cell in any table
+# editor -- store/parse it the same "; "-joined way the source spreadsheet already used
+# (e.g. "MESOS-1164; MESOS-1266"), so pasting from a sheet needs no reformatting.
+_ID_SEPARATOR_RE = re.compile(r"[;,]\s*")
+
+
+def _parse_ticket_ids(raw: str) -> list[str]:
+    return [part.strip() for part in _ID_SEPARATOR_RE.split(raw.strip()) if part.strip()]
 
 
 def queries_to_rows(queries: list[EvalQuery]) -> list[dict[str, Any]]:
@@ -149,8 +166,9 @@ def queries_to_rows(queries: list[EvalQuery]) -> list[dict[str, Any]]:
             "id": q.id,
             "question": q.question,
             "kind": q.kind,
-            "expected_ticket_id": q.expected_ticket_id or "",
+            "expected_ticket_ids": "; ".join(q.expected_ticket_ids),
             "filters": json.dumps(q.filters) if q.filters else "",
+            "category": q.category,
             "notes": q.notes,
         }
         for q in queries
@@ -190,9 +208,10 @@ def rows_to_queries(rows: list[dict[str, Any]]) -> list[EvalQuery]:
                 id=query_id,
                 question=str(row["question"]).strip(),
                 kind=kind,
-                expected_ticket_id=str(row.get("expected_ticket_id") or "").strip() or None,
+                expected_ticket_ids=_parse_ticket_ids(str(row.get("expected_ticket_ids") or "")),
                 filters=filters,
                 notes=str(row.get("notes") or ""),
+                category=str(row.get("category") or ""),
             )
         )
     ids = [q.id for q in queries]

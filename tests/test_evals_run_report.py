@@ -37,7 +37,7 @@ def _result(answer=GOOD, ticket="MESOS-1", retrieval=0.2, generation=1.0):
 
 def test_run_eval_captures_trace_fields_checks_and_errors():
     queries = [
-        EvalQuery(id="q1", question="a", expected_ticket_id="MESOS-1"),
+        EvalQuery(id="q1", question="a", expected_ticket_ids=["MESOS-1"]),
         EvalQuery(id="q2", question="b", kind="unanswerable"),
         EvalQuery(id="q3", question="c"),
     ]

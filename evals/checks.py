@@ -31,10 +31,15 @@ def cited_ticket_ids(answer: str) -> set[str]:
 
 
 def retrieval_hit(trace: Trace) -> bool | None:
-    """Was the ticket this query was generated from among the retrieved ones?"""
-    if not trace.expected_ticket_id:
+    """Was any one of this query's expected tickets among the retrieved ones?
+
+    Some queries have more than one equally valid source ticket (e.g. a
+    duplicate-triage case that could correctly cite either the original ticket
+    or a later duplicate of it) -- any single hit counts.
+    """
+    if not trace.expected_ticket_ids:
         return None
-    return trace.expected_ticket_id in trace.retrieved_ticket_ids
+    return any(ticket_id in trace.retrieved_ticket_ids for ticket_id in trace.expected_ticket_ids)
 
 
 def citations_valid(trace: Trace) -> bool | None:

@@ -52,8 +52,9 @@ def run_query(
         kind=query.kind,
         chat_model=chat_model,
         top_k=k,
-        expected_ticket_id=query.expected_ticket_id,
+        expected_ticket_ids=query.expected_ticket_ids,
         filters=query.filters,
+        category=query.category,
     )
     try:
         result = service.answer(query.question, k=k, filters=query.filters)

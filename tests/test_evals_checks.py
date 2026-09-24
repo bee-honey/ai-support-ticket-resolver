@@ -12,7 +12,7 @@ GOOD_ANSWER = "Suggested Resolution\n- restart the agent\n\nSupporting Evidence\
 def _trace(**overrides) -> Trace:
     base = dict(
         run_id="r", query_id="q1", question="q", kind="answerable", chat_model="m", top_k=5,
-        expected_ticket_id="MESOS-1", answer=GOOD_ANSWER, retrieved_ticket_ids=["MESOS-1", "MESOS-2"],
+        expected_ticket_ids=["MESOS-1"], answer=GOOD_ANSWER, retrieved_ticket_ids=["MESOS-1", "MESOS-2"],
         total_seconds=2.0,
     )
     base.update(overrides)
@@ -28,7 +28,12 @@ def test_all_checks_pass_for_a_good_answerable_trace():
 
 def test_retrieval_hit_fails_when_expected_ticket_missing_and_is_na_without_expected():
     assert run_checks(_trace(retrieved_ticket_ids=["MESOS-9"]))["retrieval_hit"] is False
-    assert run_checks(_trace(expected_ticket_id=None))["retrieval_hit"] is None
+    assert run_checks(_trace(expected_ticket_ids=[]))["retrieval_hit"] is None
+
+
+def test_retrieval_hit_passes_if_any_one_of_several_expected_tickets_was_retrieved():
+    checks = run_checks(_trace(expected_ticket_ids=["MESOS-404", "MESOS-2"], retrieved_ticket_ids=["MESOS-2"]))
+    assert checks["retrieval_hit"] is True
 
 
 def test_invented_citation_is_caught():
@@ -37,9 +42,9 @@ def test_invented_citation_is_caught():
 
 
 def test_abstention_is_correct_only_for_unanswerable_queries():
-    abstain = _trace(kind="unanswerable", expected_ticket_id=None, answer=NO_EVIDENCE_ANSWER)
+    abstain = _trace(kind="unanswerable", expected_ticket_ids=[], answer=NO_EVIDENCE_ANSWER)
     assert run_checks(abstain)["abstention_correct"] is True
-    assert run_checks(_trace(kind="unanswerable", expected_ticket_id=None))["abstention_correct"] is False
+    assert run_checks(_trace(kind="unanswerable", expected_ticket_ids=[]))["abstention_correct"] is False
     # abstaining on an answerable query is a failure (false abstention)
     assert run_checks(_trace(answer=NO_EVIDENCE_ANSWER))["abstention_correct"] is False
 
