@@ -138,6 +138,14 @@ def load_queries(path: str | Path) -> list[EvalQuery]:
     return [_from_dict(EvalQuery, row) for row in read_jsonl(path)]
 
 
+def list_datasets(datasets_dir: str | Path = "evals/datasets") -> list[Path]:
+    """Every test-set file in `datasets_dir`, alphabetically (so "queries.jsonl", the
+    framework's own default, sorts first ahead of anything else dropped in there).
+    """
+    directory = Path(datasets_dir)
+    return sorted(directory.glob("*.jsonl")) if directory.exists() else []
+
+
 def load_traces(path: str | Path) -> list[Trace]:
     return [trace_from_dict(row) for row in read_jsonl(path)]
 

@@ -34,6 +34,7 @@ from evals.schemas import (  # noqa: E402
     HumanLabel,
     Trace,
     append_jsonl,
+    list_datasets,
     load_labels,
     load_queries,
     load_traces,
@@ -44,7 +45,7 @@ from evals.schemas import (  # noqa: E402
 
 # EVALS_DIR lets tests point the page at a temp folder instead of the real data.
 EVALS_DIR = Path(os.getenv("EVALS_DIR") or ROOT / "evals")
-DATASET_PATH = EVALS_DIR / "datasets/queries.jsonl"
+DATASETS_DIR = EVALS_DIR / "datasets"
 RESULTS_DIR = EVALS_DIR / "results"
 LABELS_PATH = EVALS_DIR / "labels/human_labels.jsonl"
 
@@ -89,12 +90,31 @@ def model_picker(label: str, default: str, key: str) -> str:
 
 def render_run_tab() -> None:
     settings = get_settings()
-    queries = load_queries(DATASET_PATH)
 
-    with st.expander(f"Test set — {len(queries)} queries (editable)", expanded=not queries):
+    dataset_files = list_datasets(DATASETS_DIR)
+    if not dataset_files:
+        st.info(
+            "No test set files in `evals/datasets/` yet. Generate a draft:\n\n"
+            "`python -m evals.generate_queries --n 30`"
+        )
+        return
+
+    names = [p.name for p in dataset_files]
+    default_index = names.index("queries.jsonl") if "queries.jsonl" in names else 0
+    dataset_name = st.selectbox(
+        "Test set",
+        names,
+        index=names.index(st.session_state["selected_dataset"]) if st.session_state.get("selected_dataset") in names else default_index,
+        key="selected_dataset",
+        help="Files in evals/datasets/. Switch here to run or edit a different test set.",
+    )
+    dataset_path = DATASETS_DIR / dataset_name
+    queries = load_queries(dataset_path)
+
+    with st.expander(f"{dataset_name} — {len(queries)} queries (editable)", expanded=not queries):
         if not queries:
             st.info(
-                "No test set yet. Generate a draft, then edit it here:\n\n"
+                "This test set is empty. Generate a draft, then edit it here:\n\n"
                 "`python -m evals.generate_queries --n 30`\n\n"
                 "or add rows below and save."
             )
@@ -102,7 +122,7 @@ def render_run_tab() -> None:
             pd.DataFrame(queries_to_rows(queries), columns=QUERY_COLUMNS),
             num_rows="dynamic",
             width="stretch",
-            key="query_editor",
+            key=f"query_editor_{dataset_name}",  # per-dataset key: switching files never leaks unsaved edits between them
             column_config={
                 "kind": st.column_config.SelectboxColumn("kind", options=list(QUERY_KINDS), required=True),
                 "question": st.column_config.TextColumn("question", width="large"),
@@ -115,11 +135,11 @@ def render_run_tab() -> None:
         if st.button("Save test set"):
             try:
                 to_save = rows_to_queries(edited.fillna("").to_dict("records"))
-                write_jsonl(DATASET_PATH, to_save)
+                write_jsonl(dataset_path, to_save)
             except ValueError as exc:
                 st.error(f"Not saved: {exc}")
             else:
-                st.session_state["_flash"] = f"Saved {len(to_save)} queries to {DATASET_PATH.name}."
+                st.session_state["_flash"] = f"Saved {len(to_save)} queries to {dataset_name}."
                 st.rerun()
 
     st.subheader("Configure a run")

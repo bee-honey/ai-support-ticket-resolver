@@ -173,6 +173,88 @@ def test_run_flow_creates_a_run_file_with_traces_checks_and_judgments(evals_dir,
     assert _select(at, "Selected run").value == new_runs[0].name  # the new run is auto-selected
 
 
+def test_run_tab_lists_multiple_dataset_files_defaulting_to_queries_jsonl(evals_dir):
+    write_jsonl(evals_dir / "datasets/queries.jsonl", [EvalQuery(id="q1", question="a")])
+    write_jsonl(evals_dir / "datasets/team_test_cases.jsonl", [EvalQuery(id=f"TC-{i:02d}", question=f"q{i}") for i in range(3)])
+
+    at = _page()
+    picker = _select(at, "Test set")
+    assert picker.options == ["queries.jsonl", "team_test_cases.jsonl"]
+    assert picker.value == "queries.jsonl"  # default, even though team_test_cases.jsonl sorts after it
+    assert "queries.jsonl — 1 queries" in " ".join(e.label for e in at.expander)
+
+
+def _editor_value(at: AppTest, dataset_name: str):
+    # st.data_editor surfaces under at.dataframe, keyed the same as the widget's `key=`;
+    # AppTest exposes its current content via `.value` but has no way to simulate editing
+    # a cell (no set_value on this element type), so tests can only read what's rendered.
+    return next(d for d in at.dataframe if d.key == f"query_editor_{dataset_name}").value
+
+
+def test_switching_dataset_loads_the_other_files_queries_without_leaking_edits(evals_dir):
+    write_jsonl(evals_dir / "datasets/queries.jsonl", [EvalQuery(id="q1", question="generated question")])
+    write_jsonl(evals_dir / "datasets/team_test_cases.jsonl", [EvalQuery(id="TC-01", question="sme question")])
+
+    at = _page()
+    assert "queries.jsonl — 1 queries" in " ".join(e.label for e in at.expander)
+    assert _editor_value(at, "queries.jsonl")["question"].tolist() == ["generated question"]
+
+    at = _select(at, "Test set").select("team_test_cases.jsonl").run()
+    assert "team_test_cases.jsonl — 1 queries" in " ".join(e.label for e in at.expander)
+    assert _editor_value(at, "team_test_cases.jsonl")["question"].tolist() == ["sme question"]
+
+
+def test_saving_writes_only_the_selected_dataset_file(evals_dir):
+    write_jsonl(evals_dir / "datasets/queries.jsonl", [EvalQuery(id="q1", question="original")])
+    write_jsonl(evals_dir / "datasets/team_test_cases.jsonl", [EvalQuery(id="TC-01", question="untouched")])
+
+    at = _page()
+    at = _select(at, "Test set").select("team_test_cases.jsonl").run()
+    at = _button(at, "Save test set").click().run()
+
+    assert any("Saved 1 queries to team_test_cases.jsonl" in s.value for s in at.success)
+    from evals.schemas import load_queries
+    assert load_queries(evals_dir / "datasets/team_test_cases.jsonl")[0].question == "untouched"
+    assert load_queries(evals_dir / "datasets/queries.jsonl")[0].question == "original"  # other file untouched
+
+
+def test_run_evals_uses_the_selected_datasets_queries_not_the_default(evals_dir, monkeypatch):
+    import app.rag.service as rag_service
+    import app.retrieval.retriever as retriever
+
+    write_jsonl(evals_dir / "datasets/queries.jsonl", [EvalQuery(id="q1", question="from the default set")])
+    write_jsonl(evals_dir / "datasets/team_test_cases.jsonl", [EvalQuery(id="TC-01", question="from the team set")])
+
+    seen_questions = []
+
+    class FakeService:
+        def __init__(self, retriever=None, chat_model=None, **_):
+            pass
+
+        def answer(self, question, k=None, filters=None):
+            seen_questions.append(question)
+            return RAGResult(answer=GOOD, chunks=[], retrieval_seconds=0.1, generation_seconds=0.1)
+
+    monkeypatch.setattr(rag_service, "RAGService", FakeService)
+    monkeypatch.setattr(retriever, "Retriever", lambda: MagicMock())
+
+    at = _page()
+    at = _select(at, "Test set").select("team_test_cases.jsonl").run()
+    _button(at, "▶ Run evals").click().run()
+
+    assert not at.exception, [e.value for e in at.exception]
+    assert seen_questions == ["from the team set"]
+
+
+def test_no_dataset_files_shows_the_generate_hint_without_crashing(tmp_path, monkeypatch):
+    monkeypatch.setenv("EVALS_DIR", str(tmp_path))
+    __import__("streamlit").cache_resource.clear()
+    at = _page()
+    assert not at.exception
+    assert any("No test set files" in i.value for i in at.info)
+    assert not any(s.label == "Test set" for s in at.selectbox)
+
+
 def test_rows_roundtrip_assigns_missing_ids_and_drops_blank_rows():
     rows = queries_to_rows([EvalQuery(id="q001", question="a", filters={"component": "docker"}, kind="filtered")])
     assert rows[0]["filters"] == '{"component": "docker"}'
