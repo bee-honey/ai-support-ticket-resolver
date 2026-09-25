@@ -118,7 +118,9 @@ def test_dates_in_the_list_are_human_formatted_not_raw_iso():
     assert not any("2020-01-05T" in str(v) for v in resolved)
 
 
-def test_deep_link_jumps_straight_to_the_tickets_detail():
+def test_deep_link_jumps_straight_to_the_tickets_detail_only_not_the_whole_tab():
+    # the regression this covers: a citation link used to open just the ticket; a
+    # prior refactor made it show the full 1151-row table above the detail too.
     at = _page(ticket="MESOS-1")
     assert not at.exception
     assert any(m.value == "### MESOS-1" for m in at.markdown)
@@ -126,6 +128,17 @@ def test_deep_link_jumps_straight_to_the_tickets_detail():
     # both chunks are shown, in order, as separate expandable units
     labels = [e.label for e in at.expander]
     assert "Chunk 1 of 2" in labels and "Chunk 2 of 2" in labels
+    with pytest.raises(StopIteration):
+        _table(at)  # the table must NOT render in this focused, detail-only view
+    assert any("Browse all tickets" in b.label for b in at.button)
+
+
+def test_browse_all_tickets_button_switches_to_the_table_keeping_the_ticket_in_view():
+    at = _page(ticket="MESOS-1")
+    at = next(b for b in at.button if "Browse all tickets" in b.label).click().run()
+    assert not at.exception
+    assert _table(at) is not None  # now showing the table
+    assert any(m.value == "### MESOS-1" for m in at.markdown)  # ...with the same ticket still shown below it
 
 
 def test_selecting_a_row_shows_its_detail_below_the_table_and_syncs_the_url():
@@ -138,12 +151,28 @@ def test_selecting_a_row_shows_its_detail_below_the_table_and_syncs_the_url():
     assert at.query_params.get("ticket") == ["MESOS-2"]  # stays a shareable deep link
 
 
-def test_a_query_param_deep_link_is_overridden_by_a_fresh_row_click():
+def test_switching_tickets_while_browsing_stays_in_browse_mode():
     at = _page(ticket="MESOS-1")
-    at = _select_row(at, 1)  # click MESOS-2 while MESOS-1 was deep-linked
+    at = next(b for b in at.button if "Browse all tickets" in b.label).click().run()
+    at = _select_row(at, 1)  # click MESOS-2 while browsing
     assert any(m.value == "### MESOS-2" for m in at.markdown)
     assert not any(m.value == "### MESOS-1" for m in at.markdown)
     assert at.query_params.get("ticket") == ["MESOS-2"]
+    assert _table(at) is not None  # stays in browse mode -- table still visible
+
+
+def test_a_new_deep_link_resets_out_of_browse_mode():
+    # even after browsing the full table, clicking a *different* citation elsewhere
+    # should land back on the focused, detail-only view for that new ticket.
+    at = _page(ticket="MESOS-1")
+    at = next(b for b in at.button if "Browse all tickets" in b.label).click().run()
+    assert _table(at) is not None
+
+    at.query_params["ticket"] = "MESOS-2"
+    at = at.run()
+    assert any(m.value == "### MESOS-2" for m in at.markdown)
+    with pytest.raises(StopIteration):
+        _table(at)
 
 
 def test_clear_button_closes_the_detail_and_deselects_the_row():

@@ -187,6 +187,10 @@ def clear_selection() -> None:
     st.session_state.pop("ticket_table", None)  # also drop the dataframe's own remembered selection
 
 
+def enter_browse_mode() -> None:
+    st.session_state["tickets_browsing"] = True
+
+
 st.caption("Browse the tickets the chatbot is grounded in. Check a row to see exactly what it retrieves from.")
 
 vector_store = get_vector_store()
@@ -195,55 +199,70 @@ index = load_ticket_index(vector_store)
 if index.empty:
     st.info("No tickets are ingested yet. Ask a question on the Resolver page first -- it ingests data on first use.")
 else:
-    search = st.text_input("Search tickets", placeholder="Search by ID or summary...", label_visibility="collapsed")
-    left, right = st.columns(2)
-    with left:
-        status_options = [ANY_OPTION, *sorted(v for v in index["status"].unique() if v)]
-        status_filter = st.selectbox("Status", status_options)
-    with right:
-        component_tag_index = vector_store.component_tag_index()
-        component_tags = st.multiselect("Component", sorted(component_tag_index))
+    deep_linked_id = st.query_params.get("ticket")
+    # A *new* external deep link (a citation clicked from Chat/Evals) always gets the focused,
+    # detail-only view below -- even if this session had browsed the full table earlier --
+    # since clicking a citation should show just that ticket, not the whole tab. Browsing mode
+    # (table + detail below it) persists only while staying on the same ticket/table.
+    if deep_linked_id != st.session_state.get("tickets_last_seen"):
+        st.session_state["tickets_browsing"] = False
+    st.session_state["tickets_last_seen"] = deep_linked_id
 
-    visible = index
-    if search:
-        needle = search.lower()
-        visible = visible[
-            visible["ticket_id"].str.lower().str.contains(needle) | visible["summary"].str.lower().str.contains(needle)
-        ]
-    if status_filter != ANY_OPTION:
-        visible = visible[visible["status"] == status_filter]
-    if component_tags:
-        raw_matches = {raw for tag in component_tags for raw in component_tag_index.get(tag, [])}
-        raw_display = {r.replace(";", ", ") for r in raw_matches}
-        visible = visible[visible["component"].isin(raw_display)]
+    if deep_linked_id and not st.session_state.get("tickets_browsing"):
+        render_ticket_detail(vector_store, deep_linked_id)
+        st.button("← Browse all tickets", on_click=enter_browse_mode)
+    else:
+        search = st.text_input("Search tickets", placeholder="Search by ID or summary...", label_visibility="collapsed")
+        left, right = st.columns(2)
+        with left:
+            status_options = [ANY_OPTION, *sorted(v for v in index["status"].unique() if v)]
+            status_filter = st.selectbox("Status", status_options)
+        with right:
+            component_tag_index = vector_store.component_tag_index()
+            component_tags = st.multiselect("Component", sorted(component_tag_index))
 
-    st.caption(f"{len(visible)} of {len(index)} tickets")
+        visible = index
+        if search:
+            needle = search.lower()
+            visible = visible[
+                visible["ticket_id"].str.lower().str.contains(needle)
+                | visible["summary"].str.lower().str.contains(needle)
+            ]
+        if status_filter != ANY_OPTION:
+            visible = visible[visible["status"] == status_filter]
+        if component_tags:
+            raw_matches = {raw for tag in component_tags for raw in component_tag_index.get(tag, [])}
+            raw_display = {r.replace(";", ", ") for r in raw_matches}
+            visible = visible[visible["component"].isin(raw_display)]
 
-    display = visible[LIST_COLUMNS].copy()
-    display["resolved_date"] = display["resolved_date"].map(format_date)
-    display.columns = LIST_HEADERS
-    event = st.dataframe(
-        display,
-        hide_index=True,
-        width="stretch",
-        height=TABLE_HEIGHT,
-        on_select="rerun",
-        selection_mode="single-row",
-        key="ticket_table",
-    )
+        st.caption(f"{len(visible)} of {len(index)} tickets")
 
-    # A fresh row click always wins; otherwise fall back to a deep link from another
-    # page (?ticket=<id>), so both ways of arriving at a ticket render the same detail.
-    selected_rows = event.selection.rows
-    selected_id = visible.iloc[selected_rows[0]]["ticket_id"] if selected_rows else st.query_params.get("ticket")
+        display = visible[LIST_COLUMNS].copy()
+        display["resolved_date"] = display["resolved_date"].map(format_date)
+        display.columns = LIST_HEADERS
+        event = st.dataframe(
+            display,
+            hide_index=True,
+            width="stretch",
+            height=TABLE_HEIGHT,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="ticket_table",
+        )
 
-    if selected_id:
-        if selected_rows:  # keep the URL in sync with a live click, so this stays a shareable deep link
-            st.query_params["ticket"] = selected_id
-        st.divider()
-        header, clear = st.columns([6, 1])
-        with header:
-            st.markdown("**Ticket details**")
-        with clear:
-            st.button("✕ Clear", help="Close this ticket's detail", on_click=clear_selection)
-        render_ticket_detail(vector_store, selected_id)
+        # A fresh row click always wins; otherwise fall back to the deep link (e.g. just
+        # arrived via "Browse all tickets" with that ticket still the one in the URL).
+        selected_rows = event.selection.rows
+        selected_id = visible.iloc[selected_rows[0]]["ticket_id"] if selected_rows else deep_linked_id
+
+        if selected_id:
+            if selected_rows:  # keep the URL in sync with a live click -- stays a shareable deep link
+                st.query_params["ticket"] = selected_id
+                st.session_state["tickets_last_seen"] = selected_id
+            st.divider()
+            header, clear = st.columns([6, 1])
+            with header:
+                st.markdown("**Ticket details**")
+            with clear:
+                st.button("✕ Clear", help="Close this ticket's detail", on_click=clear_selection)
+            render_ticket_detail(vector_store, selected_id)
