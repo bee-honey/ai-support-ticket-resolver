@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.rag.service import NO_EVIDENCE_ANSWER
-from evals.checks import cited_ticket_ids, is_abstention, run_checks
+from app.rag.service import IRRELEVANT_EVIDENCE_ANSWER, NO_EVIDENCE_ANSWER
+from evals.checks import cited_ticket_ids, has_required_sections, is_abstention, run_checks
 from evals.schemas import Trace
 
 GOOD_ANSWER = "Suggested Resolution\n- restart the agent\n\nSupporting Evidence\n- MESOS-1 and MESOS-2"
@@ -52,6 +52,41 @@ def test_abstention_is_correct_only_for_unanswerable_queries():
 def test_llm_phrased_abstention_is_recognised():
     assert is_abstention("There is not enough supporting evidence to recommend a resolution.")
     assert not is_abstention(GOOD_ANSWER)
+
+
+def test_irrelevant_evidence_answer_is_recognised_as_abstention():
+    # the relevance-gate's decline text, distinct from NO_EVIDENCE_ANSWER -- must still count
+    assert is_abstention(IRRELEVANT_EVIDENCE_ANSWER)
+
+
+def test_upfront_decline_before_a_supporting_evidence_section_is_an_abstention():
+    # a genuine LLM-authored decline: states it first, "evidence" section just explains why
+    answer = (
+        "**Suggested Resolution**\nThere is not enough supporting evidence to recommend a resolution "
+        "regarding this specific issue.\n\n**Supporting Evidence**\nThe retrieved evidence does not "
+        "address this."
+    )
+    assert is_abstention(answer)
+
+
+def test_trailing_hedge_after_a_real_answer_is_not_an_abstention():
+    # real, observed failure mode: a full cited answer that ends with a scope-narrowing
+    # disclaimer -- this is a hedge, not a decline, and must not be flagged as one
+    answer = (
+        "**Suggested Resolution:**\n1. Investigate the timing of status updates.\n2. Check for race "
+        "conditions similar to MESOS-6026.\n\n**Supporting Evidence:**\n- MESOS-6026 documents this "
+        "exact race condition.\n\nThere is not enough supporting evidence to recommend a specific code "
+        "change beyond investigating the timing."
+    )
+    assert not is_abstention(answer)
+
+
+def test_has_required_sections_correctly_sees_a_trailing_hedge_answer_as_a_real_answer():
+    answer = (
+        "**Suggested Resolution:**\ndo the thing\n\n**Supporting Evidence:**\ncites MESOS-1\n\n"
+        "There is not enough supporting evidence to recommend a specific variant of this fix."
+    )
+    assert has_required_sections(_trace(answer=answer)) is True
 
 
 def test_required_sections_skipped_for_abstentions_and_flagged_when_missing():

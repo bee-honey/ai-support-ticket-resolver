@@ -22,6 +22,23 @@ your answer.
   2. "Supporting Evidence" -- which historical tickets/docs justify each step.
 """
 
+RELEVANCE_GATE_PROMPT = """\
+You are a relevance gate for a Mesos support assistant. The assistant only \
+has historical Mesos support tickets and documentation to draw on.
+
+Given the user's problem and the evidence retrieved for it, decide: does \
+this evidence contain information that is genuinely useful for answering \
+THIS problem -- the same component/subsystem, the same symptom, or a \
+cause/fix that plausibly applies? Evidence that only shares surface \
+keywords without describing the same kind of problem is not useful, and \
+evidence for a different technology entirely is never useful, even if the \
+wording looks superficially similar (e.g. both mention a ticket ID, "fix", \
+"error", or "timeout").
+
+Respond with a single JSON object and nothing else:
+{"relevant": true or false, "reason": "<one short sentence>"}
+"""
+
 USER_PROMPT_TEMPLATE = """\
 New support problem:
 {question}

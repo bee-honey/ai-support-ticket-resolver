@@ -22,8 +22,25 @@ REQUIRED_SECTIONS = ("Suggested Resolution", "Supporting Evidence")
 
 
 def is_abstention(answer: str) -> bool:
+    """True if the answer is fundamentally declining, not just hedging at the end.
+
+    A real decline states it up front, or is the literal NO_EVIDENCE_ANSWER. An
+    observed real failure mode: the model writes a full, cited "Suggested
+    Resolution" + "Supporting Evidence" answer, then tacks on a trailing
+    disclaimer like "there is not enough supporting evidence to recommend a
+    *specific* code change beyond this" -- that's a hedge on an otherwise real
+    answer, not a decline, so it shouldn't count as one. Distinguished by
+    position: the marker only counts if it appears before any "Supporting
+    Evidence" section (a real decline never gets that far).
+    """
+    if answer.strip() == NO_EVIDENCE_ANSWER.strip():
+        return True
     lowered = answer.lower()
-    return _ABSTAIN_MARKER in lowered or answer.strip() == NO_EVIDENCE_ANSWER.strip()
+    marker_index = lowered.find(_ABSTAIN_MARKER)
+    if marker_index == -1:
+        return False
+    evidence_heading_index = lowered.find("supporting evidence")
+    return evidence_heading_index == -1 or marker_index <= evidence_heading_index
 
 
 def cited_ticket_ids(answer: str) -> set[str]:
