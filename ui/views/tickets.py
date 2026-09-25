@@ -26,10 +26,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo r
 from app.ingestion.ticket_lookup import CommentEntry, TicketText, load_ticket_text  # noqa: E402
 from app.models.schemas import RetrievedChunk  # noqa: E402
 from app.vectorstore.chroma_store import VectorStoreService  # noqa: E402
-from ui.ticket_links import ticket_page_link  # noqa: E402
 
 ANY_OPTION = "(any)"
-MAX_LIST_ROWS = 40  # rendered as individual clickable links, not a virtualized grid -- keep this bounded
+TABLE_HEIGHT = 420  # a fixed, moderate height keeps this a real "top half"; detail renders below it
+LIST_COLUMNS = ["ticket_id", "summary", "component", "status", "resolved_date"]
+LIST_HEADERS = ["ID", "Summary", "Component", "Status", "Resolved"]
 
 STATUS_COLORS = {
     "resolved": "green", "closed": "green", "done": "green",
@@ -181,17 +182,12 @@ def render_ticket_detail(vector_store: VectorStoreService, ticket_id: str) -> No
         render_ticket_body_from_chunks(vector_store, ticket_id)
 
 
-def render_ticket_row(row: pd.Series) -> None:
-    label = f"{row['ticket_id']} — {row['summary']}" if row["summary"] else row["ticket_id"]
-    ticket_page_link(row["ticket_id"], label=label)
-    details = " · ".join(
-        str(value) for value in (row["component"], row["status"], format_date(row["resolved_date"])) if value
-    )
-    if details:
-        st.caption(details)
+def clear_selection() -> None:
+    st.query_params.pop("ticket", None)
+    st.session_state.pop("ticket_table", None)  # also drop the dataframe's own remembered selection
 
 
-st.caption("Browse the tickets the chatbot is grounded in. Click a ticket to see exactly what it retrieves from.")
+st.caption("Browse the tickets the chatbot is grounded in. Check a row to see exactly what it retrieves from.")
 
 vector_store = get_vector_store()
 index = load_ticket_index(vector_store)
@@ -199,14 +195,6 @@ index = load_ticket_index(vector_store)
 if index.empty:
     st.info("No tickets are ingested yet. Ask a question on the Resolver page first -- it ingests data on first use.")
 else:
-    deep_linked_id = st.query_params.get("ticket")
-    if deep_linked_id:
-        render_ticket_detail(vector_store, deep_linked_id)
-        if st.button("← Back to all tickets"):
-            st.query_params.pop("ticket", None)
-            st.rerun()
-        st.divider()
-
     search = st.text_input("Search tickets", placeholder="Search by ID or summary...", label_visibility="collapsed")
     left, right = st.columns(2)
     with left:
@@ -229,11 +217,33 @@ else:
         raw_display = {r.replace(";", ", ") for r in raw_matches}
         visible = visible[visible["component"].isin(raw_display)]
 
-    shown = visible.head(MAX_LIST_ROWS)
-    caption = f"{len(shown)} of {len(visible)} matching tickets" if len(visible) != len(shown) else f"{len(visible)} tickets"
-    if len(visible) > len(shown):
-        caption += " -- refine your search to narrow further"
-    st.caption(caption)
+    st.caption(f"{len(visible)} of {len(index)} tickets")
 
-    for _, row in shown.iterrows():
-        render_ticket_row(row)
+    display = visible[LIST_COLUMNS].copy()
+    display["resolved_date"] = display["resolved_date"].map(format_date)
+    display.columns = LIST_HEADERS
+    event = st.dataframe(
+        display,
+        hide_index=True,
+        width="stretch",
+        height=TABLE_HEIGHT,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="ticket_table",
+    )
+
+    # A fresh row click always wins; otherwise fall back to a deep link from another
+    # page (?ticket=<id>), so both ways of arriving at a ticket render the same detail.
+    selected_rows = event.selection.rows
+    selected_id = visible.iloc[selected_rows[0]]["ticket_id"] if selected_rows else st.query_params.get("ticket")
+
+    if selected_id:
+        if selected_rows:  # keep the URL in sync with a live click, so this stays a shareable deep link
+            st.query_params["ticket"] = selected_id
+        st.divider()
+        header, clear = st.columns([6, 1])
+        with header:
+            st.markdown("**Ticket details**")
+        with clear:
+            st.button("✕ Clear", help="Close this ticket's detail", on_click=clear_selection)
+        render_ticket_detail(vector_store, selected_id)

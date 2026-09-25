@@ -75,47 +75,47 @@ def _page(ticket: str | None = None) -> AppTest:
     return at.run()
 
 
-def _rendered_ticket_ids(monkeypatch) -> list[str]:
-    """Patches ticket_page_link (used for every row in the list, and cross-page
-    citation links) to record every ticket_id it's called with -- st.page_link
-    itself shows as an opaque UnknownElement in AppTest, so this is the precise
-    way to check which tickets actually rendered as rows."""
-    import ui.ticket_links as ticket_links
-
-    calls: list[str] = []
-    monkeypatch.setattr(ticket_links, "ticket_page_link", lambda ticket_id, label=None: calls.append(ticket_id))
-    return calls
+def _table(at: AppTest):
+    return next(d for d in at.dataframe if d.key == "ticket_table")
 
 
-def test_list_shows_every_ingested_ticket_once(monkeypatch):
-    rendered = _rendered_ticket_ids(monkeypatch)
+def _select_row(at: AppTest, position: int) -> AppTest:
+    # AppTest has no click-simulation API for st.dataframe row selection; this sets
+    # the same session_state shape a frontend checkbox click would produce.
+    at.session_state["ticket_table"] = {"selection": {"rows": [position], "columns": []}}
+    return at.run()
+
+
+def test_list_shows_every_ingested_ticket_once():
     at = _page()
     assert not at.exception
-    assert rendered.count("MESOS-1") == 1 and rendered.count("MESOS-2") == 1  # one row per ticket, not per chunk
+    ids = _table(at).value["ID"].tolist()
+    assert ids.count("MESOS-1") == 1 and ids.count("MESOS-2") == 1  # one row per ticket, not per chunk
 
 
-def test_search_filters_by_id_or_summary(monkeypatch):
-    rendered = _rendered_ticket_ids(monkeypatch)
+def test_search_filters_by_id_or_summary():
     at = _page()
-    rendered.clear()
-    next(t for t in at.text_input if t.label == "Search tickets").set_value("timeout").run()
-    assert rendered == ["MESOS-2"]
+    at = next(t for t in at.text_input if t.label == "Search tickets").set_value("timeout").run()
+    assert _table(at).value["ID"].tolist() == ["MESOS-2"]
 
 
-def test_status_filter_restricts_to_matching_tickets(monkeypatch):
-    rendered = _rendered_ticket_ids(monkeypatch)
+def test_status_filter_restricts_to_matching_tickets():
     at = _page()
-    rendered.clear()
-    next(s for s in at.selectbox if s.label == "Status").select("Open").run()
-    assert rendered == ["MESOS-2"]
+    at = next(s for s in at.selectbox if s.label == "Status").select("Open").run()
+    assert _table(at).value["ID"].tolist() == ["MESOS-2"]
 
 
-def test_component_filter_uses_the_tag_index_not_raw_strings(monkeypatch):
-    rendered = _rendered_ticket_ids(monkeypatch)
+def test_component_filter_uses_the_tag_index_not_raw_strings():
     at = _page()
-    rendered.clear()
-    next(m for m in at.multiselect if m.label == "Component").select("docker").run()
-    assert rendered == ["MESOS-1"]
+    at = next(m for m in at.multiselect if m.label == "Component").select("docker").run()
+    assert _table(at).value["ID"].tolist() == ["MESOS-1"]
+
+
+def test_dates_in_the_list_are_human_formatted_not_raw_iso():
+    at = _page()
+    resolved = _table(at).value["Resolved"].tolist()
+    assert "Jan 05, 2020" in resolved
+    assert not any("2020-01-05T" in str(v) for v in resolved)
 
 
 def test_deep_link_jumps_straight_to_the_tickets_detail():
@@ -128,31 +128,38 @@ def test_deep_link_jumps_straight_to_the_tickets_detail():
     assert "Chunk 1 of 2" in labels and "Chunk 2 of 2" in labels
 
 
-def test_back_button_clears_the_query_param(monkeypatch):
-    rendered = _rendered_ticket_ids(monkeypatch)
+def test_selecting_a_row_shows_its_detail_below_the_table_and_syncs_the_url():
+    at = _page()
+    assert not any(m.value.startswith("### ") for m in at.markdown)  # nothing selected yet
+    at = _select_row(at, 1)  # MESOS-2 (sorted 2nd)
+    assert not at.exception
+    assert any(m.value == "### MESOS-2" for m in at.markdown)
+    assert _table(at) is not None  # the table is still showing, not replaced
+    assert at.query_params.get("ticket") == ["MESOS-2"]  # stays a shareable deep link
+
+
+def test_a_query_param_deep_link_is_overridden_by_a_fresh_row_click():
     at = _page(ticket="MESOS-1")
-    rendered.clear()
-    next(b for b in at.button if "Back to all tickets" in b.label).click().run()
+    at = _select_row(at, 1)  # click MESOS-2 while MESOS-1 was deep-linked
+    assert any(m.value == "### MESOS-2" for m in at.markdown)
+    assert not any(m.value == "### MESOS-1" for m in at.markdown)
+    assert at.query_params.get("ticket") == ["MESOS-2"]
+
+
+def test_clear_button_closes_the_detail_and_deselects_the_row():
+    at = _page()
+    at = _select_row(at, 0)
+    assert any(m.value == "### MESOS-1" for m in at.markdown)
+    at = next(b for b in at.button if "Clear" in b.label).click().run()
     assert at.query_params.get("ticket") is None
-    assert set(rendered) == {"MESOS-1", "MESOS-2"}  # the full list is showing again, not just the detail
+    assert not any(m.value.startswith("### ") for m in at.markdown)
+    assert _table(at) is not None  # the list stays visible throughout
 
 
 def test_deep_link_to_a_nonexistent_ticket_shows_an_error_not_a_crash():
     at = _page(ticket="MESOS-999")
     assert not at.exception
     assert any("No ticket found" in e.value for e in at.error)
-
-
-def test_clicking_a_ticket_row_is_a_real_navigable_link_with_the_right_query_param(monkeypatch):
-    # The click itself can't be simulated (st.page_link is opaque to AppTest), but this
-    # confirms each row is wired to the exact link a real click would follow.
-    import ui.ticket_links as ticket_links
-
-    calls: list[tuple] = []
-    monkeypatch.setattr(ticket_links, "ticket_page_link", lambda ticket_id, label=None: calls.append((ticket_id, label)))
-    _page()
-    assert ("MESOS-1", "MESOS-1 — Docker daemon crash") in calls
-    assert ("MESOS-2", "MESOS-2 — Network timeout") in calls
 
 
 def test_empty_store_shows_a_helpful_message_not_a_crash(tmp_path, monkeypatch):
