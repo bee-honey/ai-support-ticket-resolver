@@ -19,7 +19,7 @@ from app.models.schemas import Document
 from app.vectorstore.chroma_store import VectorStoreService
 from tests.conftest import FakeEmbeddingService
 
-PAGE = str(Path(__file__).resolve().parent.parent / "ui" / "views" / "tickets.py")
+APP = str(Path(__file__).resolve().parent.parent / "ui" / "resolver_support.py")
 
 DOCKER_TICKET = [
     Document(
@@ -64,43 +64,58 @@ def patch_vector_store(seeded_store, monkeypatch):
 
 
 def _page(ticket: str | None = None) -> AppTest:
-    at = AppTest.from_file(PAGE, default_timeout=30)
+    # Through the full entrypoint, not the bare page file: st.page_link (used by this
+    # page's own clickable ticket rows, and by cross-page citation links) needs an
+    # active st.navigation() context to resolve its target.
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.run()
+    at.switch_page("views/tickets.py")
     if ticket:
         at.query_params["ticket"] = ticket
     return at.run()
 
 
-def _table(at: AppTest):
-    return next(d for d in at.dataframe if d.key == "ticket_table")
+def _rendered_ticket_ids(monkeypatch) -> list[str]:
+    """Patches ticket_page_link (used for every row in the list, and cross-page
+    citation links) to record every ticket_id it's called with -- st.page_link
+    itself shows as an opaque UnknownElement in AppTest, so this is the precise
+    way to check which tickets actually rendered as rows."""
+    import ui.ticket_links as ticket_links
+
+    calls: list[str] = []
+    monkeypatch.setattr(ticket_links, "ticket_page_link", lambda ticket_id, label=None: calls.append(ticket_id))
+    return calls
 
 
-def test_list_shows_every_ingested_ticket_once():
+def test_list_shows_every_ingested_ticket_once(monkeypatch):
+    rendered = _rendered_ticket_ids(monkeypatch)
     at = _page()
     assert not at.exception
-    rows = _table(at).value
-    assert set(rows["ticket_id"]) == {"MESOS-1", "MESOS-2"}
-    assert len(rows) == 2  # one row per ticket, not one per chunk
+    assert rendered.count("MESOS-1") == 1 and rendered.count("MESOS-2") == 1  # one row per ticket, not per chunk
 
 
-def test_search_filters_by_id_or_summary():
+def test_search_filters_by_id_or_summary(monkeypatch):
+    rendered = _rendered_ticket_ids(monkeypatch)
     at = _page()
-    next(t for t in at.text_input if t.label == "Search (id or summary)").set_value("timeout").run()
-    rows = _table(at).value
-    assert set(rows["ticket_id"]) == {"MESOS-2"}
+    rendered.clear()
+    next(t for t in at.text_input if t.label == "Search tickets").set_value("timeout").run()
+    assert rendered == ["MESOS-2"]
 
 
-def test_status_filter_restricts_to_matching_tickets():
+def test_status_filter_restricts_to_matching_tickets(monkeypatch):
+    rendered = _rendered_ticket_ids(monkeypatch)
     at = _page()
+    rendered.clear()
     next(s for s in at.selectbox if s.label == "Status").select("Open").run()
-    rows = _table(at).value
-    assert set(rows["ticket_id"]) == {"MESOS-2"}
+    assert rendered == ["MESOS-2"]
 
 
-def test_component_filter_uses_the_tag_index_not_raw_strings():
+def test_component_filter_uses_the_tag_index_not_raw_strings(monkeypatch):
+    rendered = _rendered_ticket_ids(monkeypatch)
     at = _page()
+    rendered.clear()
     next(m for m in at.multiselect if m.label == "Component").select("docker").run()
-    rows = _table(at).value
-    assert set(rows["ticket_id"]) == {"MESOS-1"}
+    assert rendered == ["MESOS-1"]
 
 
 def test_deep_link_jumps_straight_to_the_tickets_detail():
@@ -113,11 +128,13 @@ def test_deep_link_jumps_straight_to_the_tickets_detail():
     assert "Chunk 1 of 2" in labels and "Chunk 2 of 2" in labels
 
 
-def test_back_button_clears_the_query_param():
+def test_back_button_clears_the_query_param(monkeypatch):
+    rendered = _rendered_ticket_ids(monkeypatch)
     at = _page(ticket="MESOS-1")
+    rendered.clear()
     next(b for b in at.button if "Back to all tickets" in b.label).click().run()
     assert at.query_params.get("ticket") is None
-    assert _table(at).value is not None  # the list is showing again
+    assert set(rendered) == {"MESOS-1", "MESOS-2"}  # the full list is showing again, not just the detail
 
 
 def test_deep_link_to_a_nonexistent_ticket_shows_an_error_not_a_crash():
@@ -126,20 +143,87 @@ def test_deep_link_to_a_nonexistent_ticket_shows_an_error_not_a_crash():
     assert any("No ticket found" in e.value for e in at.error)
 
 
-def test_selecting_a_row_in_the_table_shows_its_detail():
-    # AppTest has no click-simulation API for st.dataframe row selection; this
-    # sets the same session_state shape a frontend click would produce.
-    at = _page()
-    at.session_state["ticket_table"] = {"selection": {"rows": [1], "columns": []}}  # MESOS-2 (sorted 2nd)
-    at.run()
-    assert any(m.value == "### MESOS-2" for m in at.markdown)
+def test_clicking_a_ticket_row_is_a_real_navigable_link_with_the_right_query_param(monkeypatch):
+    # The click itself can't be simulated (st.page_link is opaque to AppTest), but this
+    # confirms each row is wired to the exact link a real click would follow.
+    import ui.ticket_links as ticket_links
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(ticket_links, "ticket_page_link", lambda ticket_id, label=None: calls.append((ticket_id, label)))
+    _page()
+    assert ("MESOS-1", "MESOS-1 — Docker daemon crash") in calls
+    assert ("MESOS-2", "MESOS-2 — Network timeout") in calls
 
 
-def test_empty_store_shows_a_helpful_message_not_a_crash(monkeypatch):
+def test_empty_store_shows_a_helpful_message_not_a_crash(tmp_path, monkeypatch):
+    import app.ingestion.bootstrap as bootstrap
     import app.vectorstore.chroma_store as chroma_store
 
-    empty_store = VectorStoreService(persist_dir=str(Path("/tmp/does-not-matter")), collection_name="empty")
+    empty_store = VectorStoreService(persist_dir=str(tmp_path / "empty_chroma"), collection_name="empty")
     monkeypatch.setattr(chroma_store, "VectorStoreService", lambda: empty_store)
+    # An empty store also makes the app shell's bootstrap think nothing is ingested --
+    # neutralize it here so this test doesn't trigger a real ingestion attempt.
+    monkeypatch.setattr(bootstrap, "ensure_ingested", lambda *a, **k: None)
     at = _page()
     assert not at.exception
     assert any("No tickets are ingested yet" in i.value for i in at.info)
+
+
+def test_detail_view_shows_csv_sourced_text_not_chunks_when_the_source_is_known(tmp_path, monkeypatch):
+    """When the ticket's source CSV is registered, the detail view should show the
+    whole, unchunked fields (with comments as separate nicely-formatted entries),
+    not the chunked/embedded text."""
+    import csv as csv_module
+
+    import app.ingestion.ticket_lookup as ticket_lookup
+
+    csv_path = tmp_path / "known_source.csv"
+    with csv_path.open("w", newline="") as f:
+        writer = csv_module.DictWriter(f, fieldnames=["ticket_id", "summary", "description", "comments", "resolution"])
+        writer.writeheader()
+        writer.writerow(
+            {
+                "ticket_id": "MESOS-1", "summary": "Docker daemon crash",
+                "description": "The daemon crashes on boot after the last upgrade.",
+                "comments": (
+                    "[2020-01-01T00:00:00.000+0000] Looks like a stale socket.\n\n"
+                    "[2020-01-02T09:30:00.000+0000] Confirmed -- restarting fixed it."
+                ),
+                "resolution": "Restart the daemon service after upgrading.",
+            }
+        )
+    monkeypatch.setitem(ticket_lookup.KNOWN_SOURCES, "known_source.csv", (str(csv_path), None))
+
+    store = VectorStoreService(persist_dir=str(tmp_path / "chroma2"), collection_name="known_source_test")
+    store.add_documents(
+        [Document(page_content="embedded chunk text, not what should be shown", metadata={
+            "ticket_id": "MESOS-1", "summary": "Docker daemon crash", "component": "docker",
+            "status": "Resolved", "chunk_index": 0, "source_file": "known_source.csv",
+        })],
+        FakeEmbeddingService(),
+    )
+    import app.vectorstore.chroma_store as chroma_store
+    monkeypatch.setattr(chroma_store, "VectorStoreService", lambda: store)
+
+    at = _page(ticket="MESOS-1")
+    assert not at.exception
+    text = " ".join(m.value for m in at.markdown) + " ".join(w.value for w in at.text)
+    assert "The daemon crashes on boot" in text
+    assert "Restart the daemon service" in text
+    assert "embedded chunk text, not what should be shown" not in text  # CSV text used, not the chunk
+    assert not any("Chunk 1 of" in e.label for e in at.expander)  # no chunk fallback UI shown
+    # comments rendered as separate entries with formatted (not raw ISO) timestamps
+    captions = [c.value for c in at.caption]
+    assert any("Jan 01, 2020" in c for c in captions)
+    assert any("Jan 02, 2020" in c for c in captions)
+    assert "2020-01-01T00:00:00.000+0000" not in text  # raw timestamp isn't shown verbatim
+
+
+def test_metadata_grid_shows_human_formatted_dates_not_raw_iso_timestamps():
+    # st.badge isn't deeply inspectable via AppTest (renders as an opaque element,
+    # like st.page_link), so this checks the part that IS verifiable: dates.
+    at = _page(ticket="MESOS-1")
+    assert not at.exception
+    text = " ".join(m.value for m in at.markdown) + " ".join(c.value for c in at.caption)
+    assert "2020-01-05T00:00:00.000+0000" not in text
+    assert "Jan 05, 2020" in text  # resolved_date, human formatted
