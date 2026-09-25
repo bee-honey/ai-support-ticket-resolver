@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from app.rag.service import NO_EVIDENCE_ANSWER
+from app.rag.service import is_abstention  # noqa: F401 -- re-exported; canonical definition lives there
 from evals.schemas import Trace
 
 DEFAULT_LATENCY_CAP_SECONDS = 10.0
@@ -16,31 +16,7 @@ DEFAULT_LATENCY_CAP_SECONDS = 10.0
 # Ticket IDs look like MESOS-1234 / SPARK-99 (PROJECT-number).
 TICKET_ID_PATTERN = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 
-# The system prompt's preferred refusal wording; NO_EVIDENCE_ANSWER contains it too.
-_ABSTAIN_MARKER = "not enough supporting evidence"
 REQUIRED_SECTIONS = ("Suggested Resolution", "Supporting Evidence")
-
-
-def is_abstention(answer: str) -> bool:
-    """True if the answer is fundamentally declining, not just hedging at the end.
-
-    A real decline states it up front, or is the literal NO_EVIDENCE_ANSWER. An
-    observed real failure mode: the model writes a full, cited "Suggested
-    Resolution" + "Supporting Evidence" answer, then tacks on a trailing
-    disclaimer like "there is not enough supporting evidence to recommend a
-    *specific* code change beyond this" -- that's a hedge on an otherwise real
-    answer, not a decline, so it shouldn't count as one. Distinguished by
-    position: the marker only counts if it appears before any "Supporting
-    Evidence" section (a real decline never gets that far).
-    """
-    if answer.strip() == NO_EVIDENCE_ANSWER.strip():
-        return True
-    lowered = answer.lower()
-    marker_index = lowered.find(_ABSTAIN_MARKER)
-    if marker_index == -1:
-        return False
-    evidence_heading_index = lowered.find("supporting evidence")
-    return evidence_heading_index == -1 or marker_index <= evidence_heading_index
 
 
 def cited_ticket_ids(answer: str) -> set[str]:

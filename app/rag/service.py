@@ -41,6 +41,37 @@ IRRELEVANT_EVIDENCE_ANSWER = (
     "The retrieved historical tickets and documentation do not appear relevant to this problem."
 )
 
+# The system prompt's suggested refusal wording; both answers above contain it too.
+_ABSTAIN_MARKER = "not enough supporting evidence"
+
+
+def is_abstention(answer: str) -> bool:
+    """True if `answer` is fundamentally declining, not just hedging at the end.
+
+    Canonical home for this check: it's app-level (deciding whether to show
+    sources next to an answer that isn't really one), and `evals/checks.py`
+    imports it from here rather than keeping its own copy, so there's exactly
+    one definition of "did this answer actually decline".
+
+    A real decline states it up front, or is one of the two canned answers
+    above. Observed real failure mode: the model writes a full, cited
+    "Suggested Resolution" + "Supporting Evidence" answer, then tacks on a
+    trailing disclaimer like "there is not enough supporting evidence to
+    recommend a *specific* code change beyond this" -- that's a hedge on an
+    otherwise real answer, not a decline. Distinguished by position: the
+    marker only counts if it appears before any "Supporting Evidence" section
+    (a real decline never gets that far).
+    """
+    stripped = answer.strip()
+    if stripped == NO_EVIDENCE_ANSWER.strip() or stripped == IRRELEVANT_EVIDENCE_ANSWER.strip():
+        return True
+    lowered = answer.lower()
+    marker_index = lowered.find(_ABSTAIN_MARKER)
+    if marker_index == -1:
+        return False
+    evidence_heading_index = lowered.find("supporting evidence")
+    return evidence_heading_index == -1 or marker_index <= evidence_heading_index
+
 
 def _dedupe_sources(chunks: list[RetrievedChunk]) -> list[RAGSource]:
     """Collapse chunks into one citation per ticket/document, in retrieval order."""
@@ -186,7 +217,10 @@ class RAGService:
 
         return RAGResult(
             answer=answer_text,
-            sources=_dedupe_sources(chunks),
+            # The gate approving evidence doesn't guarantee generation itself won't
+            # still decide to decline (its own judgment, per the system prompt) --
+            # sources are only meaningful next to an answer that actually used them.
+            sources=[] if is_abstention(answer_text) else _dedupe_sources(chunks),
             chunks=chunks,
             retrieval_seconds=retrieval_seconds,
             generation_seconds=generation_seconds,
@@ -240,11 +274,12 @@ class RAGService:
         generation_seconds = time.perf_counter() - started
         input_tokens, output_tokens = _token_counts(usage)
 
+        final_answer = "".join(parts)
         yield StreamEvent(
             "done",
             result=RAGResult(
-                answer="".join(parts),
-                sources=_dedupe_sources(chunks),
+                answer=final_answer,
+                sources=[] if is_abstention(final_answer) else _dedupe_sources(chunks),
                 chunks=chunks,
                 retrieval_seconds=retrieval_seconds,
                 generation_seconds=generation_seconds,

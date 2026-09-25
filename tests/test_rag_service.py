@@ -165,6 +165,32 @@ def test_stream_answer_gate_rejecting_evidence_yields_done_without_streaming_tok
     llm.stream.assert_not_called()
 
 
+def test_generation_declining_on_its_own_clears_sources_even_though_the_gate_approved():
+    # gate approves (relevant=True), but the answer-generation call itself still writes
+    # a decline -- sources must not show up next to an answer that says it found nothing
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, llm = _make_service(chunks, relevant=True)
+    llm.invoke.return_value = MagicMock(content="There is not enough supporting evidence to recommend a resolution.")
+    result = service.answer("q")
+    assert result.sources == []
+    assert result.chunks == chunks  # still kept for eval diagnostics
+
+
+def test_generation_giving_a_real_answer_still_returns_sources_as_before():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks, relevant=True, llm_content="Suggested Resolution: restart it.")
+    result = service.answer("q")
+    assert [s.ticket_id for s in result.sources] == ["T-1"]
+
+
+def test_stream_answer_generation_declining_on_its_own_clears_sources():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, llm = _make_service(chunks, relevant=True)
+    llm.stream.return_value = iter([_piece("There is not enough supporting evidence to recommend a resolution.")])
+    result = list(service.stream_answer("q"))[-1].result
+    assert result.sources == []
+
+
 def test_stream_answer_gate_approving_evidence_still_streams_tokens():
     chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
     service, llm = _make_service(chunks, relevant=True)
