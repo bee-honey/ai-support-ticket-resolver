@@ -73,3 +73,28 @@ def test_delete_by_source_removes_only_that_source(vector_store, fake_embedding_
 def test_empty_collection_returns_no_results(vector_store, fake_embedding_service):
     results = vector_store.similarity_search("anything", fake_embedding_service, k=5)
     assert results == []
+
+
+def test_get_chunks_returns_full_text_matching_a_filter(vector_store, fake_embedding_service):
+    docs = [
+        Document(page_content="chunk 0 text", metadata={"ticket_id": "MESOS-1", "chunk_index": 0, "source_file": "s.csv"}),
+        Document(page_content="chunk 1 text", metadata={"ticket_id": "MESOS-1", "chunk_index": 1, "source_file": "s.csv"}),
+        Document(page_content="other ticket", metadata={"ticket_id": "MESOS-2", "chunk_index": 0, "source_file": "s.csv"}),
+    ]
+    vector_store.add_documents(docs, fake_embedding_service)
+    chunks = vector_store.get_chunks(filters={"ticket_id": "MESOS-1"})
+    assert {c.text for c in chunks} == {"chunk 0 text", "chunk 1 text"}
+    assert vector_store.get_chunks(filters={"chunk_index": 0}) and len(vector_store.get_chunks(filters={"chunk_index": 0})) == 2
+
+
+def test_component_tag_index_splits_semicolon_joined_components(vector_store, fake_embedding_service):
+    docs = [
+        Document(page_content="a", metadata={"ticket_id": "MESOS-1", "component": "docker;agent", "chunk_index": 0, "source_file": "s.csv"}),
+        Document(page_content="b", metadata={"ticket_id": "MESOS-2", "component": "docker", "chunk_index": 0, "source_file": "s.csv"}),
+        Document(page_content="c", metadata={"ticket_id": "MESOS-3", "component": "networking", "chunk_index": 0, "source_file": "s.csv"}),
+    ]
+    vector_store.add_documents(docs, fake_embedding_service)
+    index = vector_store.component_tag_index()
+    assert set(index["docker"]) == {"docker;agent", "docker"}  # tag "docker" maps back to both raw strings
+    assert index["agent"] == ["docker;agent"]
+    assert index["networking"] == ["networking"]

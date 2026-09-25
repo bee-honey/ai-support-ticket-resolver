@@ -21,8 +21,18 @@ from evals.schemas import (
     write_jsonl,
 )
 
-PAGE = str(Path(__file__).resolve().parent.parent / "ui" / "views" / "evals.py")
+ROOT = Path(__file__).resolve().parent.parent
+APP = str(ROOT / "ui" / "resolver_support.py")
 GOOD = "Suggested Resolution\n- fix\n\nSupporting Evidence\n- MESOS-1"
+
+
+class FakeVectorStore:
+    """Stands in for VectorStoreService() wherever the app shell's one-time
+    ingest-if-empty bootstrap (ui/resolver_support.py) constructs one directly --
+    reports a non-empty collection so it never touches real Chroma or OpenAI."""
+
+    def collection_info(self):
+        return {"name": "support_tickets", "count": 1, "persist_dir": "chroma_db"}
 
 
 def _trace(run_id: str, query_id: str, faithful: int, seconds: float = 2.0, kind: str = "answerable") -> Trace:
@@ -42,7 +52,10 @@ def _trace(run_id: str, query_id: str, faithful: int, seconds: float = 2.0, kind
 
 @pytest.fixture
 def evals_dir(tmp_path, monkeypatch) -> Path:
+    import app.vectorstore.chroma_store as chroma_store
+
     monkeypatch.setenv("EVALS_DIR", str(tmp_path))
+    monkeypatch.setattr(chroma_store, "VectorStoreService", FakeVectorStore)
     st_cache = __import__("streamlit").cache_resource
     st_cache.clear()
     write_jsonl(tmp_path / "results/20260101-000001-gpt-4o-mini.jsonl",
@@ -53,7 +66,14 @@ def evals_dir(tmp_path, monkeypatch) -> Path:
 
 
 def _page() -> AppTest:
-    return AppTest.from_file(PAGE, default_timeout=30).run()
+    # Through the full entrypoint, not the bare page file: st.page_link (used by
+    # ticket cross-links in the trace inspector) needs an active st.navigation()
+    # context to resolve its target, which only exists via resolver_support.py.
+    # Evals isn't the default page, so switch to it once landed.
+    at = AppTest.from_file(APP, default_timeout=30)
+    at.run()
+    at.switch_page("views/evals.py")
+    return at.run()
 
 
 def _button(at: AppTest, prefix: str):
@@ -89,7 +109,10 @@ def test_compare_shows_deltas_with_latency_inverted(evals_dir):
 
 
 def test_empty_state_points_to_the_run_tab(tmp_path, monkeypatch):
+    import app.vectorstore.chroma_store as chroma_store
+
     monkeypatch.setenv("EVALS_DIR", str(tmp_path))
+    monkeypatch.setattr(chroma_store, "VectorStoreService", FakeVectorStore)
     at = _page()
     assert not at.exception
     assert any("No runs yet" in i.value for i in at.info)
@@ -247,7 +270,10 @@ def test_run_evals_uses_the_selected_datasets_queries_not_the_default(evals_dir,
 
 
 def test_no_dataset_files_shows_the_generate_hint_without_crashing(tmp_path, monkeypatch):
+    import app.vectorstore.chroma_store as chroma_store
+
     monkeypatch.setenv("EVALS_DIR", str(tmp_path))
+    monkeypatch.setattr(chroma_store, "VectorStoreService", FakeVectorStore)
     __import__("streamlit").cache_resource.clear()
     at = _page()
     assert not at.exception

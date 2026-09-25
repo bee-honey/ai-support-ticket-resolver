@@ -128,6 +128,25 @@ class VectorStoreService:
         }
         return sorted(values)
 
+    def component_tag_index(self) -> dict[str, list[str]]:
+        """Maps a single clean component tag (e.g. "docker") to every raw stored
+        `component` string that includes it (e.g. "docker;agent").
+
+        Tickets can list multiple components as one semicolon-joined string
+        (e.g. "agent;containerization;libprocess;stout"), which is unreadable as
+        a flat dropdown of ~100 combinations. Splitting it into tags for display,
+        then mapping a selected tag back to every raw string containing it, lets
+        a caller offer clean choices while still filtering with Chroma's
+        exact-match `where` (via `$in` over the matching raw strings). Shared by
+        every UI page that filters on component, so there's one definition.
+        """
+        index: dict[str, list[str]] = {}
+        for raw in self.list_metadata_values("component"):
+            for tag in (part.strip() for part in raw.split(";")):
+                if tag:
+                    index.setdefault(tag, []).append(raw)
+        return index
+
     def get_chunks(self, filters: dict[str, Any] | None = None) -> list[RetrievedChunk]:
         """All stored chunks matching an exact-match metadata filter (no similarity search).
 

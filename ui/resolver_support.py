@@ -58,6 +58,7 @@ _bootstrap_data()
 navigation = st.navigation(
     [
         st.Page("views/chat.py", title="Resolver", icon=":material/support_agent:", default=True),
+        st.Page("views/tickets.py", title="Tickets", icon=":material/confirmation_number:"),
         st.Page("views/evals.py", title="Evals", icon=":material/analytics:"),
     ]
 )

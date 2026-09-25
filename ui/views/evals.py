@@ -42,6 +42,7 @@ from evals.schemas import (  # noqa: E402
     rows_to_queries,
     write_jsonl,
 )
+from ui.ticket_links import ticket_page_link  # noqa: E402
 
 # EVALS_DIR lets tests point the page at a temp folder instead of the real data.
 EVALS_DIR = Path(os.getenv("EVALS_DIR") or ROOT / "evals")
@@ -239,6 +240,11 @@ def _render_trace_detail(trace: Trace, labels: dict[str, HumanLabel]) -> None:
         st.error(trace.error)
     st.markdown(f"**Problem**\n\n{trace.question}")
     st.markdown(f"**Answer**\n\n{trace.answer or '_(none)_'}")
+    retrieved_ids = list(dict.fromkeys(trace.retrieved_ticket_ids))  # dedupe, preserve retrieval order
+    if retrieved_ids:
+        st.markdown("**Retrieved tickets** (click to verify against the real ticket)")
+        for ticket_id in retrieved_ids:
+            ticket_page_link(ticket_id)
     with st.expander("Evidence the model saw"):
         st.text(trace.context or "(nothing retrieved)")
     st.markdown("**Checks**")

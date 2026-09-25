@@ -13,7 +13,6 @@ from app.models.schemas import RAGResult, RAGSource
 from app.rag.service import StreamEvent
 
 UI = Path(__file__).resolve().parent.parent / "ui"
-CHAT = str(UI / "views" / "chat.py")
 APP = str(UI / "resolver_support.py")
 
 ANSWER = "Suggested Resolution\n- restart docker"
@@ -22,6 +21,9 @@ ANSWER = "Suggested Resolution\n- restart docker"
 class FakeVectorStore:
     def list_metadata_values(self, field):
         return {"component": ["docker", "agent;webui"], "status": ["Resolved"]}.get(field, [])
+
+    def component_tag_index(self) -> dict[str, list[str]]:
+        return {"docker": ["docker"], "agent": ["agent;webui"], "webui": ["agent;webui"]}
 
     def collection_info(self):
         return {"name": "support_tickets", "count": 3, "persist_dir": "chroma_db"}
@@ -53,16 +55,26 @@ class FakeService:
 def fakes(monkeypatch):
     import app.rag.service as rag_service
     import app.retrieval.retriever as retriever
+    import app.vectorstore.chroma_store as chroma_store
 
     FakeService.fail = False
     monkeypatch.setattr(rag_service, "RAGService", FakeService)
     monkeypatch.setattr(retriever, "Retriever", lambda: MagicMock())
+    # The app shell's one-time ingest-if-empty bootstrap (ui/resolver_support.py)
+    # builds its own VectorStoreService() directly -- patch it too, so it sees a
+    # non-empty collection and never touches the real Chroma dir or OpenAI API
+    # while these tests run through the full entrypoint below.
+    monkeypatch.setattr(chroma_store, "VectorStoreService", FakeVectorStore)
     st.cache_resource.clear()
     st.cache_data.clear()
 
 
 def _chat() -> AppTest:
-    return AppTest.from_file(CHAT, default_timeout=30).run()
+    # Through the full entrypoint (not the bare page file): st.page_link (used by
+    # ticket cross-links) needs an active st.navigation() context to resolve its
+    # target, which only exists when the app is entered via resolver_support.py.
+    # Chat is the default page, so this already lands there.
+    return AppTest.from_file(APP, default_timeout=30).run()
 
 
 def _button(at: AppTest, label: str):

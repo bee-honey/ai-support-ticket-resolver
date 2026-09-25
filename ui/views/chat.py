@@ -21,6 +21,7 @@ from app.models.schemas import RAGResult, RAGSource  # noqa: E402
 from app.rag.service import RAGService  # noqa: E402
 from app.retrieval.retriever import Retriever  # noqa: E402
 from ui.formatting import format_live_stats, format_stats  # noqa: E402
+from ui.ticket_links import ticket_page_link  # noqa: E402
 
 # Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
 PAINT_INTERVAL = 0.05
@@ -55,32 +56,21 @@ def get_filter_options(_rag_service: RAGService, field: str) -> list[str]:
 
 @st.cache_data(ttl=300)
 def get_component_tag_index(_rag_service: RAGService) -> dict[str, list[str]]:
-    """Maps a single clean component tag (e.g. "docker") to every raw stored
-    `component` string that includes it (e.g. "docker;agent").
-
-    Tickets can list multiple components as one semicolon-joined string
-    (e.g. "agent;containerization;libprocess;stout"), which is unreadable as
-    a flat dropdown of ~100 combinations. Splitting it into tags for display,
-    then mapping a selected tag back to every raw string containing it, lets
-    the UI offer clean choices while still filtering with Chroma's exact-match
-    `where` (via `$in` over the matching raw strings).
-    """
     try:
-        raw_values = _rag_service.retriever.vector_store.list_metadata_values("component")
+        return _rag_service.retriever.vector_store.component_tag_index()
     except Exception:
         return {}
 
-    index: dict[str, list[str]] = {}
-    for raw in raw_values:
-        for tag in (part.strip() for part in raw.split(";")):
-            if tag:
-                index.setdefault(tag, []).append(raw)
-    return index
 
-
-def render_source(source: RAGSource) -> str:
-    title = source.ticket_id or source.source_file or "Unknown source"
-    line1 = f"**{title}** — {source.summary}" if source.summary else f"**{title}**"
+def render_source(source: RAGSource) -> None:
+    """One source: its ticket ID as a clickable link to the Tickets page (so the
+    citation can be verified by eye instead of trusted blind), plus its details."""
+    if source.ticket_id:
+        label = f"{source.ticket_id} — {source.summary}" if source.summary else source.ticket_id
+        ticket_page_link(source.ticket_id, label=label)
+    else:
+        title = source.source_file or "Unknown source"
+        st.markdown(f"**{title}** — {source.summary}" if source.summary else f"**{title}**")
     component_display = source.component.replace(";", ", ") if source.component else None
     details = " · ".join(
         f"{label}: {value}"
@@ -91,7 +81,8 @@ def render_source(source: RAGSource) -> str:
         )
         if value
     )
-    return f"{line1}\n\n{details}" if details else line1
+    if details:
+        st.caption(details)
 
 
 st.caption("Describe a support problem. Answers are grounded in historical tickets and documentation.")
@@ -145,7 +136,7 @@ for turn in st.session_state.history:
         if turn["sources"]:
             with st.expander(f"Sources ({len(turn['sources'])})"):
                 for source in turn["sources"]:
-                    st.markdown(render_source(source))
+                    render_source(source)
 
 question = st.chat_input("Describe the support problem...")
 
@@ -204,7 +195,7 @@ if question:
             if result.sources:
                 with st.expander(f"Sources ({len(result.sources)})"):
                     for source in result.sources:
-                        st.markdown(render_source(source))
+                        render_source(source)
             st.session_state.history.append(
                 {
                     "question": question,
