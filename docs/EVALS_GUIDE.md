@@ -211,6 +211,15 @@ evals/
 └── results/*.jsonl           # one file per run -- gitignored, regenerate anytime
 ```
 
+Each run's filename is `<timestamp>-<dataset>-<chat_model>.jsonl`, e.g.
+`20260925-100829-team_test_cases-gpt-4o-mini.jsonl` — timestamp first (so the Metrics tab's
+"Selected run" / "Compare with" pickers, and `evals.report`'s own listing, stay newest-first
+under a plain filename sort), then which dataset produced it, then which model answered it.
+With more than one dataset file now selectable (see the Run tab's picker / `--dataset`), the
+filename is the only place that records which one a given run came from, so it's written to
+be read at a glance rather than requiring you to open the file and guess from its `query_id`
+prefixes (`TC-01` vs `q001`).
+
 ---
 
 ## CLI Quick Reference

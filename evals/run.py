@@ -32,8 +32,17 @@ DEFAULT_DATASET = "evals/datasets/queries.jsonl"
 DEFAULT_RESULTS_DIR = "evals/results"
 
 
-def make_run_id(chat_model: str) -> str:
-    return f"{time.strftime('%Y%m%d-%H%M%S')}-{chat_model}"
+def make_run_id(chat_model: str, dataset: str) -> str:
+    """<timestamp>-<dataset>-<chat_model>, e.g. 20260925-100829-team_test_cases-gpt-4o-mini.
+
+    Timestamp leads so `list_runs()`'s plain string sort stays newest-first; the dataset
+    name is what was missing before -- with several test-set files now selectable (see
+    the Run tab's dataset picker / `--dataset`), the run_id/filename is the only place
+    that records which one produced a given run, so it needs to be legible at a glance
+    rather than requiring someone to open the file and guess from its query_id prefixes.
+    """
+    dataset_name = Path(dataset).stem
+    return f"{time.strftime('%Y%m%d-%H%M%S')}-{dataset_name}-{chat_model}"
 
 
 def run_query(
@@ -85,7 +94,11 @@ def run_eval(
     workers: int = 4,
     on_progress: Callable[[int, int, Trace], None] | None = None,
 ) -> list[Trace]:
-    run_id = run_id or make_run_id(chat_model)
+    # "adhoc": run_eval() takes already-loaded queries, not a dataset path, so it has no
+    # real dataset name to offer here -- both real callers (the CLI and the Run tab)
+    # already pass run_id explicitly with the actual dataset name; this fallback only
+    # matters for a caller (e.g. a test) that doesn't precompute one.
+    run_id = run_id or make_run_id(chat_model, "adhoc")
     traces: list[Trace] = []
     for index, query in enumerate(queries, start=1):
         trace = run_query(
@@ -122,7 +135,7 @@ def main() -> None:
     if not queries:
         sys.exit(f"No queries found in {args.dataset}. Generate some: python -m evals.generate_queries")
 
-    run_id = make_run_id(args.chat_model)
+    run_id = make_run_id(args.chat_model, args.dataset)
     output_path = Path(args.output_dir) / f"{run_id}.jsonl"
     print(f"Run {run_id}: {len(queries)} queries, chat model {args.chat_model}, k={args.k}")
 

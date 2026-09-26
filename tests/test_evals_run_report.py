@@ -8,10 +8,24 @@ from unittest.mock import MagicMock
 from app.models.schemas import RAGResult, RetrievedChunk
 from evals.judges.base import METRICS, Judge
 from evals.report import percentile, render_report
-from evals.run import run_eval
+from evals.run import make_run_id, run_eval
 from evals.schemas import EvalQuery, load_traces, write_jsonl
 
 GOOD = "Suggested Resolution\n- fix\n\nSupporting Evidence\n- MESOS-1"
+
+
+def test_make_run_id_encodes_timestamp_dataset_and_model_in_that_order():
+    run_id = make_run_id("gpt-4o-mini", "evals/datasets/team_test_cases.jsonl")
+    timestamp, dataset, model = run_id.split("-", 2)[0], "team_test_cases", "gpt-4o-mini"
+    assert run_id.startswith(timestamp)  # timestamp leads, so newest-first filename sort still works
+    assert dataset in run_id and model in run_id
+    assert run_id.endswith(f"-{dataset}-{model}")
+
+
+def test_make_run_id_uses_just_the_dataset_filename_not_its_full_path():
+    run_id = make_run_id("gpt-4o-mini", "evals/datasets/queries.jsonl")
+    assert "evals" not in run_id and "datasets" not in run_id
+    assert run_id.endswith("-queries-gpt-4o-mini")
 
 
 def _service(answers: dict[str, object]):

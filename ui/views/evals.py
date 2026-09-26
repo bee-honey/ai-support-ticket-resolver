@@ -161,7 +161,7 @@ def render_run_tab() -> None:
 
     if st.button("▶ Run evals", type="primary", disabled=not queries):
         subset = queries[: int(limit)] if limit else queries
-        run_id = make_run_id(chat_model)
+        run_id = make_run_id(chat_model, dataset_name)
         path = RESULTS_DIR / f"{run_id}.jsonl"
         bar = st.progress(0.0, text="Starting…")
 
