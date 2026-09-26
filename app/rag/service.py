@@ -23,7 +23,13 @@ from langchain_openai import ChatOpenAI
 
 from app.config.settings import get_settings
 from app.models.schemas import RAGResult, RAGSource, RetrievedChunk
-from app.rag.prompts import RELEVANCE_GATE_PROMPT, SYSTEM_PROMPT, build_context, build_user_prompt
+from app.rag.prompts import (
+    QUERY_REWRITE_PROMPT,
+    RELEVANCE_GATE_PROMPT,
+    SYSTEM_PROMPT,
+    build_context,
+    build_user_prompt,
+)
 from app.retrieval.retriever import Retriever
 
 NO_EVIDENCE_ANSWER = (
@@ -40,6 +46,7 @@ IRRELEVANT_EVIDENCE_ANSWER = (
     "There is not enough supporting evidence to recommend a resolution. "
     "The retrieved historical tickets and documentation do not appear relevant to this problem."
 )
+
 
 # The system prompt's suggested refusal wording; both answers above contain it too.
 _ABSTAIN_MARKER = "not enough supporting evidence"
@@ -138,22 +145,80 @@ class RAGService:
             temperature=0,
             stream_usage=True,  # so a streamed answer still reports exact token counts
         )
-        # A separate, JSON-mode client for the relevance gate below -- it can't share
-        # `self._llm`, since forcing JSON mode on that client would break the real
-        # (plain-text) answer generation it's also used for.
+        # A separate, JSON-mode client for the relevance gate and query rewriting below --
+        # it can't share `self._llm`, since forcing JSON mode on that client would break
+        # the real (plain-text) answer generation it's also used for.
         self._relevance_llm = ChatOpenAI(
             model=chat_model or settings.chat_model,
             api_key=api_key or settings.openai_api_key,
             temperature=0,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
+        # A separate client (not reused from _relevance_llm) mainly so each has its own
+        # mock in tests without one call's mock affecting the other; a little temperature
+        # here is fine since rewrites are a search aid, not the answer itself.
+        self._rewrite_llm = ChatOpenAI(
+            model=chat_model or settings.chat_model,
+            api_key=api_key or settings.openai_api_key,
+            temperature=0.3,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+
+    def _generate_search_queries(self, question: str) -> list[str]:
+        """The original question plus one rewritten variant (always included first,
+        as a guaranteed retrieval -- rewriting can only ADD a retrieval attempt here,
+        never replace the original with something worse). Targets a failure mode seen
+        in eval runs: a user's wording simply not matching how the ticket itself was
+        written (measured: retrieval_hit was weaker for questions phrased like a
+        ticket's description/resolution than like its summary).
+
+        Scoped to exactly one rewrite (not several): measured against the real eval
+        set, 3 rewrites gave a small net gain on retrieval_hit/context_relevance but
+        also ~3x'd retrieval latency and correlated with more invalid citations --
+        merging results from more, more heterogeneous queries seemed to make it
+        harder for the answering LLM to track which evidence backed which claim.
+        Cutting to one is a narrower, cheaper bet on the same fix.
+
+        Fails OPEN (returns just [question]) on any error or unparseable response --
+        a flaky rewrite call should degrade to the original Phase 1 behaviour (search
+        with the question as-is), not block retrieval entirely.
+        """
+        try:
+            response = self._rewrite_llm.invoke(
+                [SystemMessage(content=QUERY_REWRITE_PROMPT), HumanMessage(content=question)]
+            )
+            content = response.content if isinstance(response.content, str) else str(response.content)
+            raw_queries = json.loads(content).get("queries", [])
+            if not isinstance(raw_queries, list):
+                raise ValueError("'queries' was not a list")  # e.g. a bare string -- iterating it would give chars
+            rewrites = [q.strip() for q in raw_queries if isinstance(q, str) and q.strip()]
+        except Exception:
+            rewrites = []
+        # dict.fromkeys: de-dupe while preserving order (original first); cap at 2 total
+        # (original + 1 rewrite) regardless of what came back.
+        return list(dict.fromkeys([question, *rewrites]))[:2]
 
     def _retrieve(
         self, question: str, k: int | None, filters: dict[str, Any] | None
     ) -> tuple[list[RetrievedChunk], float]:
+        """Retrieve for the original question AND one rewritten variant, merging
+        results by (ticket_id, chunk_index) and keeping each chunk's best score
+        across whichever query(s) found it -- so a chunk both queries agree on
+        ranks above one only a single query happened to surface."""
         started = time.perf_counter()
-        chunks = self.retriever.retrieve(question, k=k, filters=filters)
-        return chunks, time.perf_counter() - started
+        top_k = k or get_settings().default_top_k
+        queries = self._generate_search_queries(question)
+
+        best: dict[tuple[Any, Any, str], RetrievedChunk] = {}
+        for variant in queries:
+            for chunk in self.retriever.retrieve(variant, k=top_k, filters=filters):
+                key = (chunk.metadata.get("ticket_id"), chunk.metadata.get("chunk_index"), chunk.text[:50])
+                existing = best.get(key)
+                if existing is None or (chunk.score or 0) > (existing.score or 0):
+                    best[key] = chunk
+
+        merged = sorted(best.values(), key=lambda c: c.score or 0, reverse=True)[:top_k]
+        return merged, time.perf_counter() - started
 
     def _evidence_is_relevant(self, question: str, chunks: list[RetrievedChunk]) -> bool:
         """Cheap gate before committing to a full generation call: is the retrieved

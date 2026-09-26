@@ -39,6 +39,25 @@ Respond with a single JSON object and nothing else:
 {"relevant": true or false, "reason": "<one short sentence>"}
 """
 
+QUERY_REWRITE_PROMPT = """\
+You help a Mesos support search system retrieve better evidence. Given the \
+user's support problem, produce ONE alternate search query that improves the \
+chance of matching how the original ticket was written -- a user's own \
+wording rarely matches a ticket's title exactly (e.g. a user describing a \
+symptom in their own words vs. a ticket titled with the technical term for \
+the same underlying problem).
+
+- Keep it short and search-engine-like, not a full sentence.
+- If the problem asks about more than one distinct thing, focus this one \
+rewrite on whichever part seems least likely to already match ticket \
+vocabulary directly.
+- The original question is always retrieved too, in addition to this one --
+don't just repeat it back.
+
+Respond with a single JSON object and nothing else:
+{"queries": ["..."]}
+"""
+
 USER_PROMPT_TEMPLATE = """\
 New support problem:
 {question}

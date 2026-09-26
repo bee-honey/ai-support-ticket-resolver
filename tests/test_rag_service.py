@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -24,6 +25,12 @@ def _make_service(chunks, llm_content: str = "answer text", relevant: bool = Tru
     relevance_llm = MagicMock()
     relevance_llm.invoke.return_value = MagicMock(content=f'{{"relevant": {str(relevant).lower()}, "reason": "test"}}')
     service._relevance_llm = relevance_llm
+    # Query rewriting defaults to "no extra rewrites" -- so retrieval collapses to exactly
+    # one call with the original question, matching pre-rewrite test expectations. Tests of
+    # rewriting itself override this via `service._rewrite_llm.invoke.return_value = ...`.
+    rewrite_llm = MagicMock()
+    rewrite_llm.invoke.return_value = MagicMock(content='{"queries": []}')
+    service._rewrite_llm = rewrite_llm
     return service, llm
 
 
@@ -95,6 +102,93 @@ def test_result_exposes_the_raw_retrieved_chunks_for_evals():
     service, _ = _make_service(chunks)
     result = service.answer("q")
     assert result.chunks == chunks  # not deduped, unlike result.sources
+
+
+# ---- query rewriting -----------------------------------------------------------------------------
+
+
+def _with_rewrites(service, queries: list[str]) -> None:
+    service._rewrite_llm.invoke.return_value = MagicMock(content=json.dumps({"queries": queries}))
+
+
+def test_generate_search_queries_always_leads_with_the_original_question():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks)
+    _with_rewrites(service, ["disable extraction flag"])
+    queries = service._generate_search_queries("how do I disable auto-extraction")
+    assert queries == ["how do I disable auto-extraction", "disable extraction flag"]
+
+
+def test_generate_search_queries_dedupes_a_rewrite_that_just_repeats_the_original():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks)
+    # even if the model ignores the "one query" instruction and returns several,
+    # with the first being a dupe of the original
+    _with_rewrites(service, ["same query as original", "r1", "r2"])
+    queries = service._generate_search_queries("same query as original")
+    assert queries == ["same query as original", "r1"]  # the dupe is dropped, r1 fills the remaining slot instead
+
+
+def test_generate_search_queries_caps_at_two_even_with_a_genuinely_new_rewrite():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks)
+    _with_rewrites(service, ["r1", "r2", "r3"])
+    queries = service._generate_search_queries("q")
+    assert queries == ["q", "r1"]
+
+
+@pytest.mark.parametrize("broken_content", ["not json", "{}", '{"queries": "not a list"}'])
+def test_generate_search_queries_fails_open_to_just_the_original_question(broken_content):
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks)
+    service._rewrite_llm.invoke.return_value = MagicMock(content=broken_content)
+    assert service._generate_search_queries("q") == ["q"]
+
+
+def test_generate_search_queries_fails_open_when_the_rewrite_call_itself_raises():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0})]
+    service, _ = _make_service(chunks)
+    service._rewrite_llm.invoke.side_effect = RuntimeError("rate limited")
+    assert service._generate_search_queries("q") == ["q"]
+
+
+def test_retrieve_queries_the_retriever_once_per_generated_variant():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.9)]
+    service, _ = _make_service(chunks)
+    _with_rewrites(service, ["variant 1"])
+    service.answer("original question")
+    calls = [c.args[0] for c in service.retriever.retrieve.call_args_list]
+    assert calls == ["original question", "variant 1"]
+
+
+def test_retrieve_merges_variants_deduping_by_ticket_and_chunk_keeping_the_best_score():
+    weak = RetrievedChunk(text="hit", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.4)
+    strong = RetrievedChunk(text="hit", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.9)
+    only_in_variant = RetrievedChunk(text="other", metadata={"ticket_id": "T-2", "chunk_index": 0}, score=0.5)
+
+    service, _ = _make_service([weak])
+    _with_rewrites(service, ["variant 1"])
+    service.retriever.retrieve.side_effect = [[weak], [strong, only_in_variant]]
+
+    result = service.answer("q")
+
+    # same (ticket_id, chunk_index) chunk found by both queries -> kept once, highest score wins
+    assert len([c for c in result.chunks if c.metadata["ticket_id"] == "T-1"]) == 1
+    assert next(c for c in result.chunks if c.metadata["ticket_id"] == "T-1").score == 0.9
+    assert any(c.metadata["ticket_id"] == "T-2" for c in result.chunks)  # variant-only chunk still included
+    # merged set is ranked by score, highest first
+    assert [c.score for c in result.chunks] == sorted((c.score for c in result.chunks), reverse=True)
+
+
+def test_retrieve_truncates_the_merged_set_to_top_k():
+    chunks = [
+        RetrievedChunk(text=f"c{i}", metadata={"ticket_id": f"T-{i}", "chunk_index": 0}, score=float(i))
+        for i in range(5)
+    ]
+    service, _ = _make_service(chunks)
+    result = service.answer("q", k=3)
+    assert len(result.chunks) == 3
+    assert [c.score for c in result.chunks] == [4.0, 3.0, 2.0]  # top 3 by score
 
 
 # ---- relevance gate -----------------------------------------------------------------------------
