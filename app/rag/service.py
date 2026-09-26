@@ -23,7 +23,9 @@ from langchain_openai import ChatOpenAI
 
 from app.config.settings import get_settings
 from app.models.schemas import RAGResult, RAGSource, RetrievedChunk
+from app.rag.guardrails import redact_pii
 from app.rag.prompts import (
+    PROMPT_INJECTION_GATE_PROMPT,
     QUERY_REWRITE_PROMPT,
     RELEVANCE_GATE_PROMPT,
     SYSTEM_PROMPT,
@@ -47,6 +49,14 @@ IRRELEVANT_EVIDENCE_ANSWER = (
     "The retrieved historical tickets and documentation do not appear relevant to this problem."
 )
 
+# Deliberately vague about WHY -- confirming exactly what tripped the guardrail is free
+# information for someone probing it. Returned before retrieval even runs, so there's
+# never anything to cite here.
+GUARDRAIL_REFUSAL_ANSWER = (
+    "I can't help with that request. I'm scoped to answering support questions grounded "
+    "in historical tickets and documentation, and I can't change my instructions or share "
+    "internal configuration."
+)
 
 # The system prompt's suggested refusal wording; both answers above contain it too.
 _ABSTAIN_MARKER = "not enough supporting evidence"
@@ -163,6 +173,39 @@ class RAGService:
             temperature=0.3,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
+        # Its own client too (not reused from _relevance_llm), same reason as
+        # _rewrite_llm above: an independent mock per concern in tests, even though
+        # both are JSON-mode classifiers under the hood.
+        self._injection_llm = ChatOpenAI(
+            model=chat_model or settings.chat_model,
+            api_key=api_key or settings.openai_api_key,
+            temperature=0,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
+
+    def _is_prompt_injection(self, question: str) -> bool:
+        """Cheap gate that runs BEFORE retrieval: is this question actually trying to
+        manipulate the assistant (override instructions, extract the system prompt,
+        role-play out of scope), as opposed to just an unusual support question?
+
+        Fails OPEN (returns False) on any error or unparseable response, same
+        philosophy as the relevance gate. Worth naming explicitly, since it's a
+        real trade-off for a *safety* gate specifically: a higher-stakes production
+        deployment (real write access, real user PII at risk) would more likely
+        fail CLOSED here and block on an uncertain/erroring check instead. This
+        project's actual stakes are low -- read-only retrieval, no write access, no
+        real user data -- so consistently failing open (matching every other gate
+        in this pipeline) is the more defensible choice for it: a flaky guardrail
+        call shouldn't take down a legitimate support question.
+        """
+        try:
+            response = self._injection_llm.invoke(
+                [SystemMessage(content=PROMPT_INJECTION_GATE_PROMPT), HumanMessage(content=question)]
+            )
+            content = response.content if isinstance(response.content, str) else str(response.content)
+            return bool(json.loads(content).get("injection_attempt", False))
+        except Exception:
+            return False
 
     def _generate_search_queries(self, question: str) -> list[str]:
         """The original question plus one rewritten variant (always included first,
@@ -257,7 +300,17 @@ class RAGService:
         k: int | None = None,
         filters: dict[str, Any] | None = None,
     ) -> RAGResult:
+        guardrail_started = time.perf_counter()
+        question = redact_pii(question)
+        is_injection = self._is_prompt_injection(question)
+        guardrail_seconds = time.perf_counter() - guardrail_started
+        if is_injection:
+            # Refused before retrieval even runs -- no point spending an embedding call
+            # and a Chroma query on a question we're not going to answer anyway.
+            return RAGResult(answer=GUARDRAIL_REFUSAL_ANSWER, sources=[], retrieval_seconds=guardrail_seconds)
+
         chunks, retrieval_seconds = self._retrieve(question, k, filters)
+        retrieval_seconds += guardrail_seconds  # same "pre-generation phase" bucket as the relevance gate below
 
         if not chunks:
             return RAGResult(answer=NO_EVIDENCE_ANSWER, sources=[], retrieval_seconds=retrieval_seconds)
@@ -303,7 +356,19 @@ class RAGService:
 
         Exceptions (network, auth, ...) propagate to the caller, as with `answer()`.
         """
+        guardrail_started = time.perf_counter()
+        question = redact_pii(question)
+        is_injection = self._is_prompt_injection(question)
+        guardrail_seconds = time.perf_counter() - guardrail_started
+        if is_injection:
+            yield StreamEvent(
+                "done",
+                result=RAGResult(answer=GUARDRAIL_REFUSAL_ANSWER, sources=[], retrieval_seconds=guardrail_seconds),
+            )
+            return
+
         chunks, retrieval_seconds = self._retrieve(question, k, filters)
+        retrieval_seconds += guardrail_seconds
         yield StreamEvent("retrieved", chunks=len(chunks), seconds=retrieval_seconds)
 
         if not chunks:
