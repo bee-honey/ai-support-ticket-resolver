@@ -49,6 +49,15 @@ EVALS_DIR = Path(os.getenv("EVALS_DIR") or ROOT / "evals")
 DATASETS_DIR = EVALS_DIR / "datasets"
 RESULTS_DIR = EVALS_DIR / "results"
 LABELS_PATH = EVALS_DIR / "labels/human_labels.jsonl"
+# Live chat activity (see ui/views/chat.py) -- kept out of RESULTS_DIR/LABELS_PATH on
+# purpose: these are production traces with real end-user thumbs feedback, not
+# dataset-based eval runs with SME-labeled ground truth, and mixing the two would
+# make the Run/Metrics/Label/Align tabs above (and judge alignment) treat one as
+# the other. `list_runs()` only globs RESULTS_DIR directly, so a subfolder here
+# never leaks into that picker anyway -- kept in evals/ rather than results/ as a
+# second, explicit guard against ever being mistaken for a run.
+CHAT_LOG_PATH = EVALS_DIR / "chat_logs/log.jsonl"
+CHAT_FEEDBACK_PATH = EVALS_DIR / "labels/chat_feedback.jsonl"
 
 METRIC_HELP = {
     "retrieval_hit": "The ticket the query was generated from was among the retrieved chunks.",
@@ -496,6 +505,51 @@ def render_align_tab(run_path: Path, traces: list[Trace], labels: dict[str, Huma
     st.caption("Re-judging overwrites that metric's verdicts in the selected run file. Your labels stay valid.")
 
 
+# ----------------------------------------------------------------------- feedback tab
+
+
+def render_feedback_tab() -> None:
+    """Real chat usage, logged automatically -- not a dataset run, so no expected
+    ground truth and no judge scores; the only "checks" here are ones an end user
+    actually gave via the thumbs widget in the chat page (see `render_feedback`
+    there). This is the loop closing: a thumbs-down given by a real user shows up
+    here with the exact question/answer/evidence that produced it.
+    """
+    if not CHAT_LOG_PATH.exists():
+        st.info("No chat activity logged yet — ask a question on the Resolver tab first.")
+        return
+    traces = list(reversed(load_traces(CHAT_LOG_PATH)))  # newest first
+    labels = load_labels(CHAT_FEEDBACK_PATH)
+
+    rated = sum(1 for t in traces if t.trace_id in labels)
+    thumbs_down = sum(1 for t in traces if labels.get(t.trace_id) and labels[t.trace_id].verdict == "fail")
+    cols = st.columns(3)
+    cols[0].metric("Chat answers logged", len(traces))
+    cols[1].metric("Rated", f"{rated}/{len(traces)}")
+    cols[2].metric("Thumbs down", thumbs_down)
+    st.caption(
+        "Sorted worst-first: unresolved thumbs-down feedback is the most actionable signal here, "
+        "then unrated turns, then thumbs-up."
+    )
+
+    def rank(trace) -> int:
+        label = labels.get(trace.trace_id)
+        if label is None:
+            return 1
+        return 0 if label.verdict == "fail" else 2
+
+    ordered = sorted(traces, key=rank)
+    by_id = {t.trace_id: t for t in ordered}
+
+    def describe(tid: str) -> str:
+        label = labels.get(tid)
+        marker = "👎" if label and label.verdict == "fail" else "👍" if label else "· unrated"
+        return f"{marker}  {by_id[tid].question[:70]}"
+
+    trace_id = st.selectbox("Chat turn", list(by_id), format_func=describe)
+    _render_trace_detail(by_id[trace_id], labels)
+
+
 # ------------------------------------------------------------------------------ page
 
 st.caption("Measure answer quality, retrieval and latency on a test set, and check that the LLM judges agree with you.")
@@ -519,10 +573,15 @@ with st.sidebar:
         selected_name, compare_name = None, "(none)"
         st.caption("No runs yet — start one on the Run tab.")
 
-tab_run, tab_metrics, tab_label, tab_align = st.tabs(["▶ Run", "📈 Metrics", "🏷 Label", "🎯 Align"])
+tab_run, tab_metrics, tab_label, tab_align, tab_feedback = st.tabs(
+    ["▶ Run", "📈 Metrics", "🏷 Label", "🎯 Align", "💬 Feedback"]
+)
 
 with tab_run:
     render_run_tab()
+
+with tab_feedback:
+    render_feedback_tab()
 
 if selected_name:
     run_path = RESULTS_DIR / selected_name

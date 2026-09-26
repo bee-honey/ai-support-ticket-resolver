@@ -9,3 +9,8 @@ chroma_db/*
 *.egg-info/
 .DS_Store
 evals/results/
+# Live chat activity: real end-user questions/answers and their thumbs feedback --
+# not curated like evals/labels/human_labels.jsonl (which stays tracked), and on
+# Streamlit Cloud's ephemeral filesystem it doesn't survive a redeploy anyway.
+evals/chat_logs/
+evals/labels/chat_feedback.jsonl

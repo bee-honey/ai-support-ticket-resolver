@@ -11,11 +11,12 @@ This explains `evals/` — what it measures, why it's built the way it is, and w
 - [Why This Exists](#why-this-exists)
 - [The Mental Model: Run → Judge → Label → Align](#the-mental-model-run--judge--label--align)
 - [Worked Example, Start to Finish](#worked-example-start-to-finish)
-- [The Four Screens](#the-four-screens)
+- [The Five Screens](#the-five-screens)
 - [What Gets Measured](#what-gets-measured)
 - [The Test Set: What's Validated vs. What Isn't](#the-test-set-whats-validated-vs-what-isnt)
 - [Choosing Models](#choosing-models)
 - [Known Findings (Current State)](#known-findings-current-state)
+- [Closing the Loop: Live Chat Feedback](#closing-the-loop-live-chat-feedback)
 - [File Reference](#file-reference)
 - [CLI Quick Reference](#cli-quick-reference)
 - [Recommended Workflow](#recommended-workflow)
@@ -114,9 +115,9 @@ overall   1   100%     1   0   0   0
 
 ---
 
-## The Four Screens
+## The Five Screens
 
-The Streamlit **Evals** page (`ui/views/evals.py`) has four tabs. Each one is a thin UI wrapper around the same functions the CLI uses — nothing here has logic of its own.
+The Streamlit **Evals** page (`ui/views/evals.py`) has five tabs. Each one is a thin UI wrapper around the same functions the CLI uses — nothing here has logic of its own.
 
 ### ▶ Run
 Edit the test set as a table (add/delete/reword rows, change `kind`, save), pick the **chat model** and the **judge model**, set `k` (chunks retrieved) and a latency cap, then click **Run evals**. This calls `evals.run.run_eval()` — the exact function `python -m evals.run` calls — against the real chatbot. Produces a new `results/<run_id>.jsonl` file and auto-selects it.
@@ -129,6 +130,9 @@ One trace at a time: question, evidence, answer — judge verdicts deliberately 
 
 ### 🎯 Align
 The judge-vs-you comparison table (see the worked example above), a list of every disagreement with both reasons side by side, and a **prompt editor** for each judge — edit the system prompt, then **"Save & re-judge this run"** re-grades the same traces with the new prompt (only that one metric; your labels and the other two judges' scores are untouched).
+
+### 💬 Feedback
+Real production data, not a test-set run: every answer given on the **Resolver** chat page is logged automatically as a `Trace` (`evals/chat_logs/log.jsonl`), and the 👍/👎 widget shown under each chat answer writes a `HumanLabel` (`evals/labels/chat_feedback.jsonl`) — same schemas as everywhere else in this framework, different files, because this is raw end-user signal from live usage, not SME-labeled ground truth, and mixing the two would make Align's judge-alignment comparison meaningless. Sorted worst-first (unresolved 👎 feedback, with whatever reason the user typed, first) so the actionable complaints surface without having to scroll. See [Closing the Loop](#closing-the-loop-live-chat-feedback) below.
 
 ---
 
@@ -191,6 +195,20 @@ Logged here so the team doesn't have to rediscover these from scratch. Current a
 
 ---
 
+## Closing the Loop: Live Chat Feedback
+
+Everything above runs against a fixed, hand-curated test set. That measures whether the app got *better or worse* against known-answerable questions — it says nothing about what real users actually ask, or whether they're satisfied with what they get back. `evals/chat_log.py` and the 💬 Feedback tab close that gap:
+
+- Every answer on the **Resolver** chat page is logged as a `Trace` (`evals/chat_logs/log.jsonl`) — same shape as an eval run's traces, but `run_id="chat"`, and `checks`/`judgments` stay empty (there's no expected ticket ID or `kind` for a question someone actually typed, so deterministic checks and judges have nothing to compare against).
+- The 👍/👎 widget shown under each chat answer (`st.feedback("thumbs")`) writes a `HumanLabel` keyed to that trace's `trace_id`, into its own file (`evals/labels/chat_feedback.jsonl`) — deliberately **not** `human_labels.jsonl`. Mixing raw end-user sentiment into the file `evals.align` uses for judge calibration would conflate two different kinds of ground truth; keeping them apart means the Align tab's numbers stay meaningful even as chat feedback accumulates.
+- A thumbs-down also gets an optional free-text reason box — the more actionable half of the signal. "83% thumbs-up" tells you little; "cited the wrong ticket" three times this week tells you exactly what to fix next.
+- The question is re-redacted (`redact_pii`, see `app/rag/guardrails.py`) at the point it's written to `chat_logs/log.jsonl` — not just trusted to already be clean. `RAGService.answer()`/`stream_answer()` redact their own local copy internally, which never propagates back to the caller's variable, so this is the one place that actually enforces it before anything hits disk.
+- Both files are gitignored (see `.gitignore`) — real usage data, not project config, and on Streamlit Cloud's ephemeral filesystem neither survives a redeploy anyway. That's a known, accepted limitation for a capstone-scale deployment, not a solved problem: a real production version of this would ship traces/feedback to a persistent store (a database, or at minimum an external log sink) instead of a local file.
+
+This is deliberately the smallest version of a "production monitoring" loop, not a general tracing system (no span IDs, no cross-service correlation) — it logs exactly enough to make a thumbs-down actionable (the question, the answer, what evidence it was grounded in) and no more.
+
+---
+
 ## File Reference
 
 ```
@@ -206,8 +224,11 @@ evals/
 ├── label.py                  # terminal labeling tool (the UI Label tab wraps this)
 ├── align.py                  # judge-vs-human comparison (the UI Align tab wraps this)
 ├── report.py                  # text report + the data functions the UI Metrics tab uses
+├── chat_log.py               # log_chat_turn() -- the Resolver chat page logs every live answer here
 ├── datasets/queries.jsonl   # THE TEST SET -- hand-edited, committed to git
 ├── labels/human_labels.jsonl # your pass/fail labels -- committed to git
+├── labels/chat_feedback.jsonl # real users' 👍/👎 on live chat answers -- gitignored, see below
+├── chat_logs/log.jsonl       # every live chat Q&A, logged automatically -- gitignored, see below
 └── results/*.jsonl           # one file per run -- gitignored, regenerate anytime
 ```
 
@@ -271,7 +292,7 @@ Or do all of the above from the **Evals** page in the UI — same functions unde
 So a bad score on one metric can't bias another, and so you can tune one judge's prompt without any risk of moving the other two. See `METRIC_INPUTS` in `evals/judges/base.py` — each judge is shown only the inputs it needs.
 
 **Why is `queries.jsonl` committed to git instead of gitignored?**
-It's project config the whole team should see and version, same as any other config file. Only `evals/results/` (regenerated run output) is gitignored.
+It's project config the whole team should see and version, same as any other config file. `evals/results/` (regenerated run output) and `evals/chat_logs/` / `evals/labels/chat_feedback.jsonl` (live usage data, not curated config) are gitignored; `evals/labels/human_labels.jsonl` is committed like `queries.jsonl` is.
 
 **What happens if a query in the test set is nonsense or mislabeled?**
 Nothing crashes — see [The Test Set: What's Validated vs. What Isn't](#the-test-set-whats-validated-vs-what-isnt). It quietly produces a low-signal trace that can dilute your aggregate numbers without obviously flagging itself. Spot-check traces, don't just trust the tiles.
@@ -290,5 +311,5 @@ Because latency is itself a measured metric — running queries concurrently wou
 ## Not Yet Measured
 
 - **Tool calls** — `Trace.tool_calls` exists and is already surfaced in the report and UI, currently always `None`. Once an agentic flow exists (see [AGENTIC_PHASE2_GUIDE.md](AGENTIC_PHASE2_GUIDE.md)), populate it and the same tiles/tables light up with no other changes needed.
-- **Business-outcome metrics** — e.g. "did this actually resolve the ticket," thumbs up/down from real users. Everything here measures technical quality (relevance, faithfulness, latency); it does not measure whether the app is achieving its actual goal for users. Worth raising with the team as a capstone extension.
+- **Business-outcome metrics** — e.g. "did this actually resolve the ticket." Thumbs up/down from real users is now captured (see [Closing the Loop](#closing-the-loop-live-chat-feedback)), but that's sentiment, not confirmed resolution — nothing here tracks whether the suggested fix actually worked once someone tried it.
 - **Multi-turn / agent trajectory metrics** — order of tool calls, retry behavior, whether the agent asked a clarifying question when it should have. Not applicable yet since Phase 1 is single-shot RAG.

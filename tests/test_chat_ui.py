@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -9,8 +10,9 @@ import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
-from app.models.schemas import RAGResult, RAGSource
+from app.models.schemas import RAGResult, RAGSource, RetrievedChunk
 from app.rag.service import StreamEvent
+from evals.schemas import load_labels, load_traces
 
 UI = Path(__file__).resolve().parent.parent / "ui"
 APP = str(UI / "resolver_support.py")
@@ -44,15 +46,16 @@ class FakeService:
         yield StreamEvent("token", text="Suggested Resolution\n")
         yield StreamEvent("token", text="- restart docker")
         source = RAGSource("MESOS-1", "docker", "Resolved", "Docker fails", "2023-01-14", "t.csv")
+        chunk = RetrievedChunk(text="Docker fails to start", metadata={"ticket_id": "MESOS-1", "chunk_index": 0})
         yield StreamEvent(
             "done",
-            result=RAGResult(answer=ANSWER, sources=[source], retrieval_seconds=0.4, generation_seconds=1.1,
-                             input_tokens=900, output_tokens=40),
+            result=RAGResult(answer=ANSWER, sources=[source], chunks=[chunk], retrieval_seconds=0.4,
+                             generation_seconds=1.1, input_tokens=900, output_tokens=40),
         )
 
 
 @pytest.fixture(autouse=True)
-def fakes(monkeypatch):
+def fakes(monkeypatch, tmp_path):
     import app.rag.service as rag_service
     import app.retrieval.retriever as retriever
     import app.vectorstore.chroma_store as chroma_store
@@ -65,6 +68,9 @@ def fakes(monkeypatch):
     # non-empty collection and never touches the real Chroma dir or OpenAI API
     # while these tests run through the full entrypoint below.
     monkeypatch.setattr(chroma_store, "VectorStoreService", FakeVectorStore)
+    # Chat logging/feedback (ui/views/chat.py) write under EVALS_DIR -- point it at a
+    # temp folder so these tests never touch the real evals/ directory.
+    monkeypatch.setenv("EVALS_DIR", str(tmp_path))
     st.cache_resource.clear()
     st.cache_data.clear()
 
@@ -148,3 +154,62 @@ def test_app_shell_renders_header_and_navigation():
     assert not at.exception, [e.value for e in at.exception]
     header = " ".join(m.value for m in at.markdown)
     assert "Resolver" in header and "Support" in header and "data:image/svg+xml;base64," in header
+
+
+# ---- chat logging + feedback ---------------------------------------------------------------------
+
+
+def test_answering_logs_a_chat_trace(tmp_path):
+    at = _chat()
+    at.chat_input[0].set_value("docker won't start").run()
+
+    traces = load_traces(tmp_path / "chat_logs/log.jsonl")
+    assert len(traces) == 1
+    assert traces[0].question == "docker won't start"
+    assert traces[0].answer == ANSWER
+    assert traces[0].retrieved_ticket_ids == ["MESOS-1"]
+    assert traces[0].run_id == "chat"
+
+
+def test_a_feedback_widget_is_shown_under_the_answer():
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
+    assert len(at.feedback) == 1
+
+
+def test_thumbs_up_saves_a_pass_label():
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
+    at.feedback[0].set_value(1).run()
+
+    labels = load_labels(_labels_path(at))
+    assert list(labels.values())[0].verdict == "pass"
+
+
+def test_thumbs_down_shows_a_reason_box_and_saves_a_fail_label():
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
+    at.feedback[0].set_value(0).run()
+
+    assert len(at.text_input) == 1  # reason box only appears after a thumbs-down
+    labels = load_labels(_labels_path(at))
+    label = list(labels.values())[0]
+    assert label.verdict == "fail" and label.reason == ""
+
+    at.text_input[0].set_value("cited the wrong ticket").run()
+    label = list(load_labels(_labels_path(at)).values())[0]
+    assert label.reason == "cited the wrong ticket"
+
+
+def test_rerunning_without_changing_feedback_does_not_duplicate_the_label(tmp_path):
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
+    at.feedback[0].set_value(1).run()
+    at.multiselect[0].select("docker").run()  # an unrelated rerun
+
+    lines = (tmp_path / "labels/chat_feedback.jsonl").read_text().strip().splitlines()
+    assert len(lines) == 1
+
+
+def _labels_path(at: AppTest) -> Path:
+    return Path(os.environ["EVALS_DIR"]) / "labels/chat_feedback.jsonl"

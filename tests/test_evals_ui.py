@@ -87,7 +87,7 @@ def _select(at: AppTest, label: str):
 def test_page_renders_metric_tiles_for_the_newest_run(evals_dir):
     at = _page()
     assert not at.exception
-    assert [t.label for t in at.tabs] == ["▶ Run", "📈 Metrics", "🏷 Label", "🎯 Align"]
+    assert [t.label for t in at.tabs] == ["▶ Run", "📈 Metrics", "🏷 Label", "🎯 Align", "💬 Feedback"]
     assert _select(at, "Selected run").value == "20260102-000001-gpt-4o-mini.jsonl"  # newest first
     tiles = {m.label: m.value for m in at.metric}
     assert tiles["Queries"] == "2" and tiles["faithfulness"] == "100%" and tiles["Latency p50"] == "4.0s"
@@ -143,6 +143,49 @@ def test_align_tab_compares_judges_with_labels_and_lists_disagreements(evals_dir
     row = overall[overall["metric"] == "overall"].iloc[0]
     assert row["labeled"] == 2 and row["FP"] == 1      # judge passed the answer the human failed
     assert any("disagreement" in e.label for e in at.expander)
+
+
+# ------------------------------------------------------------------------ feedback tab
+
+
+def test_feedback_tab_shows_empty_state_with_no_chat_activity(evals_dir):
+    at = _page()
+    assert not at.exception
+    assert any("No chat activity logged yet" in i.value for i in at.info)
+
+
+def test_feedback_tab_shows_logged_chat_traces_and_their_labels(evals_dir):
+    from evals.chat_log import log_chat_turn
+    from evals.schemas import HumanLabel, append_jsonl
+
+    result = RAGResult(answer=GOOD, chunks=[RetrievedChunk(text="e", metadata={"ticket_id": "MESOS-1", "chunk_index": 0})])
+    trace = log_chat_turn(
+        "docker won't start", result, chat_model="gpt-4o-mini", top_k=5,
+        log_path=evals_dir / "chat_logs/log.jsonl",
+    )
+    append_jsonl(evals_dir / "labels/chat_feedback.jsonl", HumanLabel(trace.trace_id, "fail", "wrong ticket cited"))
+
+    at = _page()
+    assert not at.exception
+    tiles = {m.label: m.value for m in at.metric}
+    assert tiles["Chat answers logged"] == "1" and tiles["Rated"] == "1/1" and tiles["Thumbs down"] == "1"
+    assert any("docker won't start" in option for option in _select(at, "Chat turn").options)
+    assert any("wrong ticket cited" in md.value for md in at.markdown)
+
+
+def test_feedback_tab_sorts_thumbs_down_first(evals_dir):
+    from evals.chat_log import log_chat_turn
+    from evals.schemas import HumanLabel, append_jsonl
+
+    log_path = evals_dir / "chat_logs/log.jsonl"
+    liked = log_chat_turn("liked question", RAGResult(answer=GOOD), chat_model="m", top_k=5, log_path=log_path)
+    disliked = log_chat_turn("disliked question", RAGResult(answer=GOOD), chat_model="m", top_k=5, log_path=log_path)
+    labels_path = evals_dir / "labels/chat_feedback.jsonl"
+    append_jsonl(labels_path, HumanLabel(liked.trace_id, "pass"))
+    append_jsonl(labels_path, HumanLabel(disliked.trace_id, "fail", "bad answer"))
+
+    at = _page()
+    assert "disliked question" in _select(at, "Chat turn").options[0]
 
 
 def test_saving_a_judge_prompt_writes_the_markdown_file(evals_dir, monkeypatch, tmp_path):

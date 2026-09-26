@@ -7,6 +7,7 @@ a FastAPI backend instead, without this file's structure changing.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,8 +21,17 @@ from app.config.settings import get_settings, model_choices  # noqa: E402
 from app.models.schemas import RAGResult, RAGSource  # noqa: E402
 from app.rag.service import RAGService  # noqa: E402
 from app.retrieval.retriever import Retriever  # noqa: E402
+from evals.chat_log import log_chat_turn  # noqa: E402
+from evals.schemas import HumanLabel, append_jsonl  # noqa: E402
 from ui.formatting import format_live_stats, format_stats  # noqa: E402
 from ui.ticket_links import ticket_page_link  # noqa: E402
+
+# Same EVALS_DIR override the Evals page uses (see ui/views/evals.py) -- so a test can
+# point both pages at one temp folder, and so the two stay in exact agreement about
+# where chat activity lives without importing each other's page module.
+EVALS_DIR = Path(os.getenv("EVALS_DIR") or Path(__file__).resolve().parent.parent.parent / "evals")
+CHAT_LOG_PATH = EVALS_DIR / "chat_logs/log.jsonl"
+CHAT_FEEDBACK_PATH = EVALS_DIR / "labels/chat_feedback.jsonl"
 
 # Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
 PAINT_INTERVAL = 0.05
@@ -86,6 +96,42 @@ def render_source(source: RAGSource) -> None:
         st.caption(details)
 
 
+def render_feedback(trace_id: str) -> None:
+    """Thumbs up/down on one answer -> a `HumanLabel` keyed to `trace_id`, the same
+    schema the eval framework's SME labels use (see evals/label.py) -- but written to
+    its own file (`CHAT_FEEDBACK_PATH`), since this is raw end-user signal from live
+    usage, not the calibration-grade ground truth `evals/align.py` compares judges
+    against. Kept out of that comparison rather than silently mixed into it.
+
+    Guarded against re-appending the same feedback on every unrelated rerun (a new
+    question, a filter change, ...): only writes when the (sentiment, reason) pair
+    for this trace_id actually changed since the last time this ran.
+    """
+    sentiment = st.feedback("thumbs", key=f"fb_{trace_id}")
+    if sentiment is None:
+        return
+    reason = ""
+    if sentiment == 0:  # thumbs down -- ask why; that's the actionable half of this signal
+        reason = st.text_input(
+            "What was wrong?",
+            key=f"fb_reason_{trace_id}",
+            placeholder="What was wrong? (optional)",
+            label_visibility="collapsed",
+        )
+    saved = st.session_state.setdefault("_feedback_saved", {})
+    current = (sentiment, reason.strip())
+    if saved.get(trace_id) == current:
+        return
+    try:
+        append_jsonl(
+            CHAT_FEEDBACK_PATH,
+            HumanLabel(trace_id=trace_id, verdict="pass" if sentiment == 1 else "fail", reason=reason.strip()),
+        )
+    except Exception:
+        return  # feedback is a bonus signal -- a write failure shouldn't surface as a chat error
+    saved[trace_id] = current
+
+
 st.caption("Describe a support problem. Answers are grounded in historical tickets and documentation.")
 
 settings = get_settings()
@@ -138,6 +184,8 @@ for turn in st.session_state.history:
             with st.expander(f"Sources ({len(turn['sources'])})"):
                 for source in turn["sources"]:
                     render_source(source)
+        if turn.get("trace_id"):
+            render_feedback(turn["trace_id"])
 
 question = st.chat_input("Describe the support problem...")
 
@@ -197,6 +245,12 @@ if question:
                 with st.expander(f"Sources ({len(result.sources)})"):
                     for source in result.sources:
                         render_source(source)
+            try:
+                trace = log_chat_turn(question, result, chat_model=chat_model, top_k=top_k, log_path=CHAT_LOG_PATH)
+            except Exception:
+                trace = None  # logging is a bonus signal -- don't let it break a working answer
+            if trace is not None:
+                render_feedback(trace.trace_id)
             st.session_state.history.append(
                 {
                     "question": question,
@@ -204,5 +258,6 @@ if question:
                     "sources": result.sources,
                     "result": result,
                     "model": chat_model,
+                    "trace_id": trace.trace_id if trace is not None else None,
                 }
             )
