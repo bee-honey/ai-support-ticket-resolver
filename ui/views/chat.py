@@ -26,14 +26,9 @@ from ui.ticket_links import ticket_page_link  # noqa: E402
 # Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
 PAINT_INTERVAL = 0.05
 
-# Keep the chat column readable on wide screens (the shared page layout is "wide" for the Evals
-# tables). st.chat_input renders in its own fixed bottom bar, outside .block-container, so its
-# containing element (stBottomBlockContainer, confirmed from Streamlit's own JS bundle -- there's
-# no documented CSS class for it) needs the same max-width or it stays full viewport width.
-st.markdown(
-    "<style>.block-container, [data-testid='stBottomBlockContainer']{max-width:980px}</style>",
-    unsafe_allow_html=True,
-)
+# No page-specific max-width here: use the app's normal wide layout, same as Tickets and Evals,
+# rather than narrowing just this page (which previously made its header/content and the
+# chat_input bar inconsistent widths against the other tabs, and against each other).
 
 
 @st.cache_resource
