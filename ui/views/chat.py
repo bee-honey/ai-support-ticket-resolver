@@ -135,12 +135,12 @@ def get_suggested_questions() -> list[str]:
     return suggestions
 
 
-def render_hot_issues() -> str | None:
+def render_hot_issues() -> None:
     """A floating 🔥 button (always available -- not just before the first
     question, unlike the earlier version of this panel) that opens a small
-    popover of clickable "Recent Hot Issues" suggestions. Returns the clicked
-    question's text this run (to be treated exactly like a typed-and-submitted
-    question), or None if nothing was clicked.
+    popover of clickable "Recent Hot Issues" suggestions. Clicking one stashes
+    it in `st.session_state["_pending_hot_issue_question"]` and immediately
+    `st.rerun()`s rather than returning it directly -- see below for why.
 
     Click-to-open, not hover-to-open: `st.popover`'s content is mounted/unmounted
     via Streamlit's own internal state on click, not shown/hidden by CSS, so a
@@ -153,11 +153,27 @@ def render_hot_issues() -> str | None:
     A clicked suggestion is dropped from what THIS session sees again (backfilled
     from get_suggested_questions()'s bigger shared pool) -- asking a question
     once means you don't need it re-suggested, but it's still a legitimate
-    suggestion for anyone else's session. Clicking one also shrinks the button
-    (and drops the attention-grabbing glow ring) for the rest of the session --
-    once it's actually been used, staying large/pulsing would just compete with
-    the answer for attention; it's still fully clickable at the smaller size to
-    reopen the popover and use it again.
+    suggestion for anyone else's session. The button itself stays one fixed
+    size the whole session (an earlier version shrank it after first use; that
+    was more confusing than helpful, so it's gone).
+
+    `st.popover` has no API to close it programmatically -- its open/closed
+    state is tracked client-side, keyed to the widget's identity, and simply
+    clicking something inside it does NOT close it (confirmed directly: it was
+    still open, with the just-clicked suggestion visibly focused, in a
+    screenshot of a real session after a click). The one lever that does work:
+    changing a stateful widget's `key` makes Streamlit mount a genuinely new
+    instance, which starts closed -- so the popover's key includes a generation
+    counter that bumps on every click. But bumping it alone isn't enough on its
+    own: this same script run already rendered the popover (with the OLD key,
+    open) before the click was even processed, so the new key wouldn't take
+    effect until whatever rerun happens next -- which, without forcing one,
+    could be "not until the user does something else". Calling `st.rerun()`
+    immediately forces that next run right now, so the popover visibly closes
+    before the answer even starts rendering, instead of lagging one interaction
+    behind. That's also why the clicked question can't just be returned
+    normally here: `st.rerun()` aborts this run right away, so the caller reads
+    it back afterward from session_state instead.
 
     Position is a fixed corner offset (HOT_ISSUES_POSITION_CSS), not user-picked
     or draggable: Streamlit's `unsafe_allow_html` is documented to not reliably
@@ -171,43 +187,43 @@ def render_hot_issues() -> str | None:
     `st-key-<key>` class on its wrapper), not to any internal/undocumented DOM
     structure -- more likely to keep working across Streamlit versions, but
     still worth eyeballing locally, since exact pixel placement can shift with
-    the app's own layout. The glow is a separate fixed-position ring element
-    (not baked into the button's own background/box-shadow), sized and
-    positioned identically to the button and animated with its own `scale()` --
-    since it shares the button's exact center, growing it outward reads as an
-    expanding halo around the button rather than a static box-shadow.
+    the app's own layout. The `[class*=...]` substring selector still matches
+    once the key gets a numeric suffix appended (`st-key-hot_issues_fab_0`,
+    `_1`, ...), so the generation counter above doesn't need a matching CSS
+    change every time it bumps.
+
+    The glow is an animated `box-shadow` directly on the button (a
+    `spread-radius` growing from 0 outward while its opacity fades to 0 -- the
+    standard dependency-free "ping" technique), not a separate sibling
+    element that has to stay pixel-aligned with the button via matching
+    `position: fixed` values on two different things. `overflow: hidden` on
+    the button is also load-bearing, not decorative: `st.popover`'s trigger
+    always renders a small built-in chevron next to the label, and without
+    clipping it, that extra inline content needs more width than the forced
+    square box provides -- the button renders as an oval instead of a circle
+    otherwise, regardless of what `width`/`height` say.
 
     The injected HTML/CSS is run through `textwrap.dedent` before being handed
     to `st.markdown` -- without it, a plain triple-quoted string here carries
     the same indentation as the surrounding Python code, and a line indented
-    4+ spaces is exactly what Markdown treats as a literal code block: the
-    `<div>` rendered as visible escaped text on the page instead of being
-    parsed as HTML (a real bug this fixes, not just a style nit).
+    4+ spaces is exactly what Markdown treats as a literal code block: raw
+    injected HTML rendered as visible escaped text on the page instead of
+    being parsed as HTML (a real bug this fixed, not just a style nit).
     """
     dismissed = st.session_state.setdefault("_dismissed_hot_issues", set())
     suggestions = [q for q in get_suggested_questions() if q.strip().lower() not in dismissed][:SUGGESTION_COUNT]
     if not suggestions:
-        return None
-    minimized = st.session_state.get("_hot_issues_minimized", False)
-    size = 30 if minimized else 52
-    font_size = 14 if minimized else 22
+        return
+    generation = st.session_state.get("_hot_issues_popover_generation", 0)
+    size = 52
+    font_size = 22
+    max_spread = round(size * 0.35)
     st.markdown(
         textwrap.dedent(f"""
         <style>
-        @keyframes hot-issues-ring {{
-            0%   {{ transform: scale(1);   opacity: 0.4; }}
-            100% {{ transform: scale(2.2); opacity: 0; }}
-        }}
-        .hot-issues-ring {{
-            position: fixed;
-            {HOT_ISSUES_POSITION_CSS}
-            width: {size}px;
-            height: {size}px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(255, 122, 61, 0.5) 0%, rgba(255, 122, 61, 0) 72%);
-            animation: {"none" if minimized else "hot-issues-ring 1.8s ease-out infinite"};
-            z-index: 998;
-            pointer-events: none;
+        @keyframes hot-issues-glow {{
+            0%   {{ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 0 0 0 rgba(255, 122, 61, 0.5); }}
+            100% {{ box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2), 0 0 0 {max_spread}px rgba(255, 122, 61, 0); }}
         }}
         div[class*="st-key-hot_issues_fab"] {{
             position: fixed;
@@ -218,30 +234,36 @@ def render_hot_issues() -> str | None:
             border-radius: 50%;
             width: {size}px;
             height: {size}px;
+            min-width: {size}px;
+            min-height: {size}px;
+            padding: 0;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             font-size: {font_size}px;
+            line-height: 1;
             border: none;
             background: linear-gradient(135deg, #ff9142, #ff5f6d);
             color: white;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+            animation: hot-issues-glow 1.8s ease-out infinite;
         }}
         div[class*="st-key-hot_issues_fab"] button:hover {{
             filter: brightness(1.08);
         }}
         </style>
-        <div class="hot-issues-ring"></div>
         """),
         unsafe_allow_html=True,
     )
-    clicked = None
-    with st.popover("🔥", key="hot_issues_fab", help="Recent Hot Issues"):
+    with st.popover("🔥", key=f"hot_issues_fab_{generation}", help="Recent Hot Issues"):
         st.markdown("**🔥 Recent Hot Issues**")
         for index, question in enumerate(suggestions):
             label = question if len(question) <= 80 else question[:77] + "..."
             if st.button(label, key=f"hot_issue_{index}", use_container_width=True):
-                clicked = question
                 dismissed.add(question.strip().lower())
-                st.session_state["_hot_issues_minimized"] = True
-    return clicked
+                st.session_state["_hot_issues_popover_generation"] = generation + 1
+                st.session_state["_pending_hot_issue_question"] = question
+                st.rerun()
 
 
 def render_source(source: RAGSource) -> None:
@@ -369,8 +391,12 @@ with st.sidebar:
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# Always available, not just before the first question (see render_hot_issues).
-suggested_question = render_hot_issues()
+# Always available, not just before the first question. Clicking a suggestion
+# inside it forces an immediate st.rerun() (see render_hot_issues for why), so
+# the question it produces arrives via session_state on the run right after,
+# not as this call's return value.
+render_hot_issues()
+suggested_question = st.session_state.pop("_pending_hot_issue_question", None)
 
 for turn in st.session_state.history:
     with st.chat_message("user"):
