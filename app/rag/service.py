@@ -35,6 +35,14 @@ from app.rag.prompts import (
 )
 from app.retrieval.retriever import Retriever
 
+# How many candidates _retrieve() asks Chroma for internally, before truncating the
+# merged, re-sorted result down to the caller's actual requested top_k -- see the
+# comment in _retrieve() for why this exists (Chroma's HNSW index measurably misses
+# genuine top matches at small n_results values on this corpus; asking for more costs
+# single-digit milliseconds regardless).
+RETRIEVAL_OVERFETCH_MULTIPLIER = 6
+RETRIEVAL_OVERFETCH_MIN = 30
+
 NO_EVIDENCE_ANSWER = (
     "There is not enough supporting evidence to recommend a resolution. "
     "No historical tickets or documentation relevant to this problem were found."
@@ -265,13 +273,27 @@ class RAGService:
         both variants together, not a round trip per variant), merging results by
         (ticket_id, chunk_index) and keeping each chunk's best score across whichever
         query(s) found it -- so a chunk both queries agree on ranks above one only a
-        single query happened to surface."""
+        single query happened to surface. Only the top `top_k` of the merged set is
+        returned to the caller -- see the overfetch note below for why more than that
+        is asked of Chroma internally.
+        """
         started = time.perf_counter()
         top_k = k or get_settings().default_top_k
         queries = self._generate_search_queries(question)
 
+        # Ask Chroma for more candidates than top_k, then truncate to top_k below --
+        # verified directly (bypassing this code entirely, straight against the Chroma
+        # API) that its HNSW index is NOT reliably accurate at small n_results values on
+        # this corpus: a query asked for n_results=5 missed a chunk entirely that an
+        # n_results=50 call for the SAME query found at rank 1 with a strong score.
+        # Chroma's HNSW search quality scales with how many candidates it's asked to
+        # consider, not just with how many you actually want back. The Chroma query
+        # itself is single-digit milliseconds regardless of n_results (measured), so
+        # this costs nothing in latency -- it only fixes a real recall gap.
+        retrieve_k = max(top_k * RETRIEVAL_OVERFETCH_MULTIPLIER, RETRIEVAL_OVERFETCH_MIN)
+
         best: dict[tuple[Any, Any, str], RetrievedChunk] = {}
-        for chunks in self.retriever.retrieve_many(queries, k=top_k, filters=filters):
+        for chunks in self.retriever.retrieve_many(queries, k=retrieve_k, filters=filters):
             for chunk in chunks:
                 key = (chunk.metadata.get("ticket_id"), chunk.metadata.get("chunk_index"), chunk.text[:50])
                 existing = best.get(key)

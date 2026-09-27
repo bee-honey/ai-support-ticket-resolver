@@ -237,6 +237,27 @@ def test_retrieve_queries_the_retriever_once_with_all_generated_variants():
     assert queries_arg == ["original question", "variant 1"]
 
 
+def test_retrieve_overfetches_from_chroma_beyond_the_requested_top_k():
+    # Verified directly against the raw Chroma API (see the investigation this fixes):
+    # its HNSW index measurably misses a genuine top-1 match at small n_results values
+    # on this corpus. Asking for more candidates than top_k, then truncating the merged
+    # result down to top_k afterward, recovers those misses at negligible cost (a
+    # Chroma query is single-digit milliseconds regardless of n_results).
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.9)]
+    service, _ = _make_service(chunks)
+    service.answer("q", k=5)
+    retrieve_k = service.retriever.retrieve_many.call_args.kwargs["k"]
+    assert retrieve_k >= 30  # RETRIEVAL_OVERFETCH_MIN -- well above the requested top_k=5
+
+
+def test_retrieve_overfetch_scales_with_a_larger_requested_top_k():
+    chunks = [RetrievedChunk(text="a", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.9)]
+    service, _ = _make_service(chunks)
+    service.answer("q", k=10)
+    retrieve_k = service.retriever.retrieve_many.call_args.kwargs["k"]
+    assert retrieve_k >= 60  # 10 * RETRIEVAL_OVERFETCH_MULTIPLIER (6), above the floor
+
+
 def test_retrieve_merges_variants_deduping_by_ticket_and_chunk_keeping_the_best_score():
     weak = RetrievedChunk(text="hit", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.4)
     strong = RetrievedChunk(text="hit", metadata={"ticket_id": "T-1", "chunk_index": 0}, score=0.9)
