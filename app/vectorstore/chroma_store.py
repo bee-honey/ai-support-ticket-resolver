@@ -93,25 +93,55 @@ class VectorStoreService:
         k: int = 5,
         filters: dict[str, Any] | None = None,
     ) -> list[RetrievedChunk]:
-        query_embedding = embedding_service.embed_query(query)
+        return self.similarity_search_many_with_filter([query], embedding_service, k=k, filters=filters)[0]
+
+    def similarity_search_many_with_filter(
+        self,
+        queries: list[str],
+        embedding_service,
+        k: int = 5,
+        filters: dict[str, Any] | None = None,
+    ) -> list[list[RetrievedChunk]]:
+        """Same as `similarity_search_with_filter`, but for several queries at once --
+        one batched embedding call (`embed_documents`, not one `embed_query` per query)
+        and one Chroma call (`query_embeddings` accepts a list natively), instead of a
+        separate round trip per query. Used by `Retriever.retrieve_many` to search an
+        original question and a rewritten variant together rather than sequentially.
+
+        Returns one result list per input query, same order as `queries`.
+        """
+        if not queries:
+            return []
+        query_embeddings = embedding_service.embed_documents(queries)
         where = self._build_where(filters)
 
         result = self._collection.query(
-            query_embeddings=[query_embedding],
+            query_embeddings=query_embeddings,
             n_results=k,
             where=where,
         )
 
-        ids = result.get("ids", [[]])[0]
-        docs = result.get("documents", [[]])[0]
-        metadatas = result.get("metadatas", [[]])[0]
-        distances = result.get("distances", [[None] * len(ids)])[0]
+        ids_per_query = result.get("ids") or []
+        docs_per_query = result.get("documents") or []
+        metadatas_per_query = result.get("metadatas") or []
+        distances_per_query = result.get("distances") or []
 
-        chunks: list[RetrievedChunk] = []
-        for doc_text, metadata, distance in zip(docs, metadatas, distances):
-            score = (1.0 - distance) if distance is not None else None
-            chunks.append(RetrievedChunk(text=doc_text, metadata=dict(metadata), score=score))
-        return chunks
+        results: list[list[RetrievedChunk]] = []
+        for i in range(len(queries)):
+            docs = docs_per_query[i] if i < len(docs_per_query) else []
+            metadatas = metadatas_per_query[i] if i < len(metadatas_per_query) else []
+            ids = ids_per_query[i] if i < len(ids_per_query) else []
+            distances = distances_per_query[i] if i < len(distances_per_query) else [None] * len(ids)
+            chunks = [
+                RetrievedChunk(
+                    text=doc_text,
+                    metadata=dict(metadata),
+                    score=(1.0 - distance) if distance is not None else None,
+                )
+                for doc_text, metadata, distance in zip(docs, metadatas, distances)
+            ]
+            results.append(chunks)
+        return results
 
     def list_metadata_values(self, field: str) -> list[str]:
         """Distinct values stored for a metadata field (e.g. "component", "status").

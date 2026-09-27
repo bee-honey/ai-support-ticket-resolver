@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -244,17 +245,19 @@ class RAGService:
     def _retrieve(
         self, question: str, k: int | None, filters: dict[str, Any] | None
     ) -> tuple[list[RetrievedChunk], float]:
-        """Retrieve for the original question AND one rewritten variant, merging
-        results by (ticket_id, chunk_index) and keeping each chunk's best score
-        across whichever query(s) found it -- so a chunk both queries agree on
-        ranks above one only a single query happened to surface."""
+        """Retrieve for the original question AND one rewritten variant IN ONE BATCHED
+        call (`Retriever.retrieve_many` -- one embedding request, one Chroma query for
+        both variants together, not a round trip per variant), merging results by
+        (ticket_id, chunk_index) and keeping each chunk's best score across whichever
+        query(s) found it -- so a chunk both queries agree on ranks above one only a
+        single query happened to surface."""
         started = time.perf_counter()
         top_k = k or get_settings().default_top_k
         queries = self._generate_search_queries(question)
 
         best: dict[tuple[Any, Any, str], RetrievedChunk] = {}
-        for variant in queries:
-            for chunk in self.retriever.retrieve(variant, k=top_k, filters=filters):
+        for chunks in self.retriever.retrieve_many(queries, k=top_k, filters=filters):
+            for chunk in chunks:
                 key = (chunk.metadata.get("ticket_id"), chunk.metadata.get("chunk_index"), chunk.text[:50])
                 existing = best.get(key)
                 if existing is None or (chunk.score or 0) > (existing.score or 0):
@@ -300,24 +303,34 @@ class RAGService:
         k: int | None = None,
         filters: dict[str, Any] | None = None,
     ) -> RAGResult:
-        guardrail_started = time.perf_counter()
+        started = time.perf_counter()
         question = redact_pii(question)
-        is_injection = self._is_prompt_injection(question)
-        guardrail_seconds = time.perf_counter() - guardrail_started
-        if is_injection:
-            # Refused before retrieval even runs -- no point spending an embedding call
-            # and a Chroma query on a question we're not going to answer anyway.
-            return RAGResult(answer=GUARDRAIL_REFUSAL_ANSWER, sources=[], retrieval_seconds=guardrail_seconds)
 
-        chunks, retrieval_seconds = self._retrieve(question, k, filters)
-        retrieval_seconds += guardrail_seconds  # same "pre-generation phase" bucket as the relevance gate below
+        # The injection check depends on nothing but the (redacted) question, and
+        # nothing downstream needs its verdict until right before generation -- so it
+        # runs on a background thread for the whole time retrieval + the relevance gate
+        # (below) are running, instead of as a 4th sequential round trip in front of
+        # them. Measured: the rewrite->retrieve->gate chain alone (~2s) is longer than
+        # this check alone (~0.9s), so it's effectively free rather than adding latency.
+        # Trade-off: retrieval (and the gate, if evidence came back) now always runs
+        # even on an actual injection attempt, since the verdict isn't known until
+        # `injection_future.result()` below -- a small wasted cost on the rare case,
+        # traded for hiding this check's latency on every legitimate question instead.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            injection_future = executor.submit(self._is_prompt_injection, question)
+
+            chunks, _ = self._retrieve(question, k, filters)
+            relevant = self._evidence_is_relevant(question, chunks) if chunks else True
+
+            is_injection = injection_future.result()
+
+        retrieval_seconds = time.perf_counter() - started  # the real wall-clock elapsed for the concurrent phase
+
+        if is_injection:
+            return RAGResult(answer=GUARDRAIL_REFUSAL_ANSWER, sources=[], retrieval_seconds=retrieval_seconds)
 
         if not chunks:
             return RAGResult(answer=NO_EVIDENCE_ANSWER, sources=[], retrieval_seconds=retrieval_seconds)
-
-        gate_started = time.perf_counter()
-        relevant = self._evidence_is_relevant(question, chunks)
-        retrieval_seconds += time.perf_counter() - gate_started  # counted as part of the pre-generation phase
 
         if not relevant:
             # `chunks` (not just `sources`) stays populated even though we're declining --
@@ -327,9 +340,9 @@ class RAGService:
                 answer=IRRELEVANT_EVIDENCE_ANSWER, sources=[], chunks=chunks, retrieval_seconds=retrieval_seconds
             )
 
-        started = time.perf_counter()
+        gen_started = time.perf_counter()
         response = self._llm.invoke(self._messages(question, chunks))
-        generation_seconds = time.perf_counter() - started
+        generation_seconds = time.perf_counter() - gen_started
         answer_text = response.content if isinstance(response.content, str) else str(response.content)
         input_tokens, output_tokens = _token_counts(response)
 
@@ -356,20 +369,28 @@ class RAGService:
 
         Exceptions (network, auth, ...) propagate to the caller, as with `answer()`.
         """
-        guardrail_started = time.perf_counter()
+        started = time.perf_counter()
         question = redact_pii(question)
-        is_injection = self._is_prompt_injection(question)
-        guardrail_seconds = time.perf_counter() - guardrail_started
+
+        # Same concurrent-injection-check design as `answer()` -- see the comment there.
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            injection_future = executor.submit(self._is_prompt_injection, question)
+
+            chunks, retrieved_seconds = self._retrieve(question, k, filters)
+            yield StreamEvent("retrieved", chunks=len(chunks), seconds=retrieved_seconds)
+
+            relevant = self._evidence_is_relevant(question, chunks) if chunks else True
+
+            is_injection = injection_future.result()
+
+        retrieval_seconds = time.perf_counter() - started  # the real wall-clock elapsed for the concurrent phase
+
         if is_injection:
             yield StreamEvent(
                 "done",
-                result=RAGResult(answer=GUARDRAIL_REFUSAL_ANSWER, sources=[], retrieval_seconds=guardrail_seconds),
+                result=RAGResult(answer=GUARDRAIL_REFUSAL_ANSWER, sources=[], retrieval_seconds=retrieval_seconds),
             )
             return
-
-        chunks, retrieval_seconds = self._retrieve(question, k, filters)
-        retrieval_seconds += guardrail_seconds
-        yield StreamEvent("retrieved", chunks=len(chunks), seconds=retrieval_seconds)
 
         if not chunks:
             yield StreamEvent(
@@ -377,10 +398,6 @@ class RAGService:
                 result=RAGResult(answer=NO_EVIDENCE_ANSWER, sources=[], retrieval_seconds=retrieval_seconds),
             )
             return
-
-        gate_started = time.perf_counter()
-        relevant = self._evidence_is_relevant(question, chunks)
-        retrieval_seconds += time.perf_counter() - gate_started
 
         if not relevant:
             yield StreamEvent(
@@ -393,7 +410,7 @@ class RAGService:
 
         parts: list[str] = []
         usage: Any = None
-        started = time.perf_counter()
+        gen_started = time.perf_counter()
         for piece in self._llm.stream(self._messages(question, chunks)):
             text = piece.content if isinstance(piece.content, str) else ""
             if text:
@@ -401,7 +418,7 @@ class RAGService:
                 yield StreamEvent("token", text=text)
             if isinstance(getattr(piece, "usage_metadata", None), dict):
                 usage = piece  # only the final chunk carries usage
-        generation_seconds = time.perf_counter() - started
+        generation_seconds = time.perf_counter() - gen_started
         input_tokens, output_tokens = _token_counts(usage)
 
         final_answer = "".join(parts)

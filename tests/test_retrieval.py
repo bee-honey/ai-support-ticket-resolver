@@ -87,6 +87,54 @@ def test_get_chunks_returns_full_text_matching_a_filter(vector_store, fake_embed
     assert vector_store.get_chunks(filters={"chunk_index": 0}) and len(vector_store.get_chunks(filters={"chunk_index": 0})) == 2
 
 
+def test_retrieve_many_returns_one_result_list_per_query_in_order(vector_store, fake_embedding_service):
+    docs = [
+        Document(page_content="Docker daemon socket stale after restart", metadata={"ticket_id": "MESOS-1001", "component": "docker", "chunk_index": 0, "source_file": "s.csv"}),
+        Document(page_content="Network partition prevents re-registration", metadata={"ticket_id": "MESOS-1002", "component": "networking", "chunk_index": 0, "source_file": "s.csv"}),
+    ]
+    retriever = _seed(vector_store, fake_embedding_service, docs)
+    results = retriever.retrieve_many(["docker issue", "network partition"], k=5)
+    assert len(results) == 2
+    assert {r.metadata["ticket_id"] for r in results[0]} == {"MESOS-1001", "MESOS-1002"}
+    assert {r.metadata["ticket_id"] for r in results[1]} == {"MESOS-1001", "MESOS-1002"}
+
+
+def test_retrieve_many_matches_calling_retrieve_once_per_query(vector_store, fake_embedding_service):
+    # The batched call is a performance change (one embedding + one Chroma round trip
+    # instead of one each per query), not a behavior change -- same fake embedding
+    # function per text either way, so results must match exactly.
+    docs = [
+        Document(page_content="Docker daemon socket stale", metadata={"ticket_id": "MESOS-1001", "component": "docker", "chunk_index": 0, "source_file": "s.csv"}),
+        Document(page_content="Network partition issue", metadata={"ticket_id": "MESOS-1002", "component": "networking", "chunk_index": 0, "source_file": "s.csv"}),
+    ]
+    retriever = _seed(vector_store, fake_embedding_service, docs)
+    queries = ["docker issue", "network partition"]
+
+    batched = retriever.retrieve_many(queries, k=5)
+    individually = [retriever.retrieve(q, k=5) for q in queries]
+
+    for batch_result, single_result in zip(batched, individually):
+        assert [(r.metadata["ticket_id"], r.score) for r in batch_result] == [
+            (r.metadata["ticket_id"], r.score) for r in single_result
+        ]
+
+
+def test_retrieve_many_respects_a_metadata_filter(vector_store, fake_embedding_service):
+    docs = [
+        Document(page_content="Docker daemon socket stale", metadata={"ticket_id": "MESOS-1001", "component": "docker", "chunk_index": 0, "source_file": "s.csv"}),
+        Document(page_content="Network partition issue", metadata={"ticket_id": "MESOS-1002", "component": "networking", "chunk_index": 0, "source_file": "s.csv"}),
+    ]
+    retriever = _seed(vector_store, fake_embedding_service, docs)
+    results = retriever.retrieve_many(["issue", "problem"], k=10, filters={"component": "docker"})
+    for result in results:
+        assert {r.metadata["ticket_id"] for r in result} == {"MESOS-1001"}
+
+
+def test_retrieve_many_with_no_queries_returns_no_results(vector_store, fake_embedding_service):
+    retriever = Retriever(vector_store=vector_store, embedding_service=fake_embedding_service)
+    assert retriever.retrieve_many([], k=5) == []
+
+
 def test_component_tag_index_splits_semicolon_joined_components(vector_store, fake_embedding_service):
     docs = [
         Document(page_content="a", metadata={"ticket_id": "MESOS-1", "component": "docker;agent", "chunk_index": 0, "source_file": "s.csv"}),

@@ -41,3 +41,18 @@ class Retriever:
         return self.vector_store.similarity_search_with_filter(
             query, self.embedding_service, k=top_k, filters=filters
         )
+
+    def retrieve_many(
+        self,
+        queries: list[str],
+        k: int | None = None,
+        filters: dict[str, Any] | None = None,
+    ) -> list[list[RetrievedChunk]]:
+        """Same as `retrieve`, but for several query variants at once -- one embedding
+        call and one Chroma call cover all of them, instead of one round trip per
+        query. Used by `RAGService` to search the original question and a rewritten
+        variant together (see `_generate_search_queries`)."""
+        top_k = k or get_settings().default_top_k
+        return self.vector_store.similarity_search_many_with_filter(
+            queries, self.embedding_service, k=top_k, filters=filters
+        )
