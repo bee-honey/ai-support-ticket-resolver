@@ -12,7 +12,7 @@ from streamlit.testing.v1 import AppTest
 
 from app.models.schemas import RAGResult, RAGSource, RetrievedChunk
 from app.rag.service import StreamEvent
-from evals.schemas import load_labels, load_traces
+from evals.schemas import EvalQuery, load_labels, load_traces, write_jsonl
 
 UI = Path(__file__).resolve().parent.parent / "ui"
 APP = str(UI / "resolver_support.py")
@@ -254,3 +254,47 @@ def test_rerunning_without_changing_feedback_does_not_duplicate_the_label(tmp_pa
 
 def _labels_path(at: AppTest) -> Path:
     return Path(os.environ["EVALS_DIR"]) / "labels/chat_feedback.jsonl"
+
+
+# ---- Recent Hot Issues ---------------------------------------------------------------------------
+
+
+def _write_seed_dataset(tmp_path: Path, questions: list[str]) -> None:
+    write_jsonl(
+        tmp_path / "datasets/team_test_cases.jsonl",
+        [EvalQuery(id=f"TC-{i:02d}", question=q, kind="answerable") for i, q in enumerate(questions, start=1)],
+    )
+
+
+def test_hot_issues_panel_shows_seed_suggestions_on_a_fresh_deployment(tmp_path):
+    # No chat activity logged yet -- falls back entirely to the SME test set.
+    _write_seed_dataset(tmp_path, ["docker fails to start", "network partition issue"])
+    at = _chat()
+    assert not at.exception
+    labels = [b.label for b in at.button]
+    assert "docker fails to start" in labels
+    assert "network partition issue" in labels
+
+
+def test_clicking_a_hot_issue_submits_it_as_a_question(tmp_path):
+    _write_seed_dataset(tmp_path, ["docker fails to start"])
+    at = _chat()
+    _button(at, "docker fails to start").click().run()
+    assert not at.exception
+    assert FakeService.last_call[0] == "docker fails to start"
+    assert len(at.session_state.history) == 1
+    assert at.session_state.history[0]["question"] == "docker fails to start"
+
+
+def test_hot_issues_panel_disappears_once_a_conversation_has_started():
+    at = _chat()
+    at.chat_input[0].set_value("some other question").run()
+    labels = [b.label for b in at.button]
+    assert not any("docker" in label.lower() for label in labels)
+
+
+def test_hot_issues_panel_does_not_appear_with_no_seed_dataset_and_no_chat_history():
+    # No evals/datasets/team_test_cases.jsonl in this temp EVALS_DIR at all.
+    at = _chat()
+    assert not at.exception
+    assert "🔥 Recent Hot Issues" not in " ".join(m.value for m in at.markdown)

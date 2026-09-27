@@ -146,6 +146,7 @@ class RAGService:
         self,
         retriever: Retriever | None = None,
         chat_model: str | None = None,
+        gate_model: str | None = None,
         api_key: str | None = None,
     ):
         settings = get_settings()
@@ -156,31 +157,45 @@ class RAGService:
             temperature=0,
             stream_usage=True,  # so a streamed answer still reports exact token counts
         )
-        # A separate, JSON-mode client for the relevance gate and query rewriting below --
-        # it can't share `self._llm`, since forcing JSON mode on that client would break
-        # the real (plain-text) answer generation it's also used for.
+        # The 3 gates below are independent of `chat_model` on purpose (`gate_model`,
+        # defaulting to `settings.gate_model` -- see its definition in
+        # app/config/settings.py): they're cheap classification/short-JSON tasks, not
+        # the answer itself, so a user picking a stronger/slower chat_model for better
+        # answers shouldn't also tax these 3 calls with that model's latency and cost.
+        # `max_tokens` is capped too -- each returns a small, bounded JSON object, so
+        # there's no legitimate reason for a response to run long, and a runaway one
+        # would otherwise silently add latency (autoregressive decoding is O(output
+        # tokens)) for zero benefit.
+        gate_model_name = gate_model or settings.gate_model
+
+        # A separate, JSON-mode client for the relevance gate below -- it can't share
+        # `self._llm`, since forcing JSON mode on that client would break the real
+        # (plain-text) answer generation it's also used for.
         self._relevance_llm = ChatOpenAI(
-            model=chat_model or settings.chat_model,
+            model=gate_model_name,
             api_key=api_key or settings.openai_api_key,
             temperature=0,
+            max_tokens=100,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
         # A separate client (not reused from _relevance_llm) mainly so each has its own
         # mock in tests without one call's mock affecting the other; a little temperature
         # here is fine since rewrites are a search aid, not the answer itself.
         self._rewrite_llm = ChatOpenAI(
-            model=chat_model or settings.chat_model,
+            model=gate_model_name,
             api_key=api_key or settings.openai_api_key,
             temperature=0.3,
+            max_tokens=100,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
         # Its own client too (not reused from _relevance_llm), same reason as
         # _rewrite_llm above: an independent mock per concern in tests, even though
         # both are JSON-mode classifiers under the hood.
         self._injection_llm = ChatOpenAI(
-            model=chat_model or settings.chat_model,
+            model=gate_model_name,
             api_key=api_key or settings.openai_api_key,
             temperature=0,
+            max_tokens=100,
             model_kwargs={"response_format": {"type": "json_object"}},
         )
 

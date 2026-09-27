@@ -21,8 +21,8 @@ from app.config.settings import get_settings, model_choices  # noqa: E402
 from app.models.schemas import RAGResult, RAGSource  # noqa: E402
 from app.rag.service import RAGService  # noqa: E402
 from app.retrieval.retriever import Retriever  # noqa: E402
-from evals.chat_log import log_chat_turn  # noqa: E402
-from evals.schemas import HumanLabel, append_jsonl  # noqa: E402
+from evals.chat_log import hot_issues, log_chat_turn  # noqa: E402
+from evals.schemas import HumanLabel, append_jsonl, load_queries  # noqa: E402
 from ui.formatting import format_live_stats, format_stats  # noqa: E402
 from ui.ticket_links import ticket_page_link  # noqa: E402
 
@@ -32,6 +32,11 @@ from ui.ticket_links import ticket_page_link  # noqa: E402
 EVALS_DIR = Path(os.getenv("EVALS_DIR") or Path(__file__).resolve().parent.parent.parent / "evals")
 CHAT_LOG_PATH = EVALS_DIR / "chat_logs/log.jsonl"
 CHAT_FEEDBACK_PATH = EVALS_DIR / "labels/chat_feedback.jsonl"
+# Fallback source for the "Recent Hot Issues" panel until there's enough real chat
+# traffic logged to be interesting (see get_suggested_questions below) -- real,
+# SME-authored questions, not placeholder text.
+SEED_SUGGESTIONS_DATASET = EVALS_DIR / "datasets/team_test_cases.jsonl"
+SUGGESTION_COUNT = 5
 
 # Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
 PAINT_INTERVAL = 0.05
@@ -71,6 +76,59 @@ def get_component_tag_index(_rag_service: RAGService) -> dict[str, list[str]]:
         return _rag_service.retriever.vector_store.component_tag_index()
     except Exception:
         return {}
+
+
+def _seed_suggestions() -> list[str]:
+    """A few real, SME-authored answerable questions from the eval test set --
+    used to top up get_suggested_questions() when there isn't enough real chat
+    traffic logged yet, so the panel is never empty on a fresh deployment."""
+    try:
+        queries = load_queries(SEED_SUGGESTIONS_DATASET)
+    except Exception:
+        return []
+    return [q.question for q in queries if q.kind == "answerable"]
+
+
+@st.cache_data(ttl=60)
+def get_suggested_questions() -> list[str]:
+    """Up to SUGGESTION_COUNT "Recent Hot Issues": real, most-asked questions from
+    live chat traffic (evals.chat_log.hot_issues), topped up with SME-authored
+    example questions when there isn't enough real traffic yet -- so the panel
+    starts useful on a fresh deployment and becomes more "real" as usage grows.
+    A short ttl (not the 300s the metadata caches above use) since this is meant
+    to feel current, not a slowly-changing reference list.
+    """
+    try:
+        suggestions = hot_issues(CHAT_LOG_PATH, CHAT_FEEDBACK_PATH, limit=SUGGESTION_COUNT)
+    except Exception:
+        suggestions = []
+    seen = {q.strip().lower() for q in suggestions}
+    for question in _seed_suggestions():
+        if len(suggestions) >= SUGGESTION_COUNT:
+            break
+        key = question.strip().lower()
+        if key not in seen:
+            suggestions.append(question)
+            seen.add(key)
+    return suggestions
+
+
+def render_hot_issues() -> str | None:
+    """A clickable "Recent Hot Issues" panel, shown only before the first question
+    in a session (like a chat app's starter prompts -- once a real conversation is
+    underway, this would just be clutter above it). Returns the clicked question's
+    text this run (to be treated exactly like a typed-and-submitted question), or
+    None if nothing was clicked."""
+    suggestions = get_suggested_questions()
+    if not suggestions:
+        return None
+    st.markdown("**🔥 Recent Hot Issues**")
+    clicked = None
+    for index, question in enumerate(suggestions):
+        label = question if len(question) <= 80 else question[:77] + "..."
+        if st.button(label, key=f"hot_issue_{index}", use_container_width=True):
+            clicked = question
+    return clicked
 
 
 def render_source(source: RAGSource) -> None:
@@ -198,6 +256,8 @@ with st.sidebar:
 if "history" not in st.session_state:
     st.session_state.history = []
 
+suggested_question = render_hot_issues() if not st.session_state.history else None
+
 for turn in st.session_state.history:
     with st.chat_message("user"):
         st.write(turn["question"])
@@ -211,7 +271,7 @@ for turn in st.session_state.history:
         if turn.get("trace_id"):
             render_feedback(turn["trace_id"])
 
-question = st.chat_input("Describe the support problem...")
+question = st.chat_input("Describe the support problem...") or suggested_question
 
 if question:
     filters: dict[str, Any] = {}

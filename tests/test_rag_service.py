@@ -44,6 +44,70 @@ def _make_service(chunks, llm_content: str = "answer text", relevant: bool = Tru
     return service, llm
 
 
+# ---- __init__: chat model vs. gate model -----------------------------------------------------
+
+
+@pytest.fixture
+def chat_open_ai(monkeypatch):
+    """Patches the real ChatOpenAI constructor so __init__ can run for real (unlike
+    _make_service, which bypasses it) without making a real client. Returns the mock
+    class so a test can inspect every call's kwargs via .call_args_list.
+
+    Also clears get_settings()'s lru_cache before AND after -- __init__ calls
+    get_settings() itself, so a stale cached Settings object (built under a
+    previous test's monkeypatched env vars, which revert once that test ends)
+    would otherwise leak into whichever test runs next.
+    """
+    from unittest.mock import patch
+
+    from app.config.settings import get_settings
+
+    get_settings.cache_clear()
+    with patch("app.rag.service.ChatOpenAI") as mock_cls:
+        mock_cls.return_value = MagicMock()
+        yield mock_cls
+    get_settings.cache_clear()
+
+
+def _model_kwarg_by_call(mock_cls) -> list[str]:
+    return [call.kwargs["model"] for call in mock_cls.call_args_list]
+
+
+def test_gate_calls_default_to_settings_gate_model_not_chat_model(chat_open_ai, monkeypatch):
+    monkeypatch.setenv("CHAT_MODEL", "gpt-4.1")
+    monkeypatch.setenv("GATE_MODEL", "gpt-4o-mini")
+    RAGService(retriever=MagicMock())
+    models = _model_kwarg_by_call(chat_open_ai)
+    # _llm (generation) gets the chat model; the 3 gates all get the (different) gate model
+    assert models[0] == "gpt-4.1"
+    assert models[1:] == ["gpt-4o-mini"] * 3
+
+
+def test_a_stronger_chat_model_choice_does_not_also_slow_down_the_gates(chat_open_ai, monkeypatch):
+    # The bug this fixes: picking a stronger/slower chat_model for better answers used
+    # to silently also switch the 3 gate calls (injection/rewrite/relevance) to that
+    # same model, taxing them with its latency and cost for no quality benefit -- they
+    # only ever need to return a small classification verdict.
+    monkeypatch.delenv("GATE_MODEL", raising=False)
+    RAGService(retriever=MagicMock(), chat_model="gpt-4.1")
+    models = _model_kwarg_by_call(chat_open_ai)
+    assert models[0] == "gpt-4.1"
+    assert all(m != "gpt-4.1" for m in models[1:])
+
+
+def test_gate_model_param_overrides_the_settings_default(chat_open_ai):
+    RAGService(retriever=MagicMock(), chat_model="gpt-4.1", gate_model="gpt-4o")
+    models = _model_kwarg_by_call(chat_open_ai)
+    assert models[1:] == ["gpt-4o"] * 3
+
+
+def test_the_3_gate_clients_cap_max_tokens_but_generation_does_not(chat_open_ai):
+    RAGService(retriever=MagicMock())
+    calls = chat_open_ai.call_args_list
+    assert "max_tokens" not in calls[0].kwargs  # generation: a real answer needs real room
+    assert [c.kwargs.get("max_tokens") for c in calls[1:]] == [100, 100, 100]
+
+
 def test_no_evidence_short_circuits_without_calling_llm():
     service, llm = _make_service([])
     result = service.answer("some question")

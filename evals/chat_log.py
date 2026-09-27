@@ -21,7 +21,8 @@ from pathlib import Path
 from app.models.schemas import RAGResult
 from app.rag.guardrails import redact_pii
 from app.rag.prompts import build_context
-from evals.schemas import Trace, append_jsonl
+from app.rag.service import is_abstention
+from evals.schemas import Trace, append_jsonl, load_labels, load_traces
 
 CHAT_RUN_ID = "chat"
 DEFAULT_CHAT_LOG = Path("evals/chat_logs/log.jsonl")
@@ -65,3 +66,49 @@ def log_chat_turn(
     )
     append_jsonl(log_path, trace)
     return trace
+
+
+def hot_issues(
+    log_path: Path | str = DEFAULT_CHAT_LOG,
+    feedback_path: Path | str | None = None,
+    limit: int = 5,
+) -> list[str]:
+    """The most-asked distinct questions in the live chat log, most-frequent first
+    (ties broken by recency) -- feeds the chat page's "Recent Hot Issues" panel.
+
+    A "hot issue" suggestion is never one the system is already known to handle
+    badly: a question is excluded if its most recent logged answer declined
+    (`is_abstention`) or if its feedback verdict was "fail" (see `feedback_path`,
+    the chat feedback labels file) -- there's no point surfacing a question as a
+    shortcut into an answer that's already known to be wrong.
+
+    Returns [] if the log doesn't exist yet, is empty, or every question was
+    excluded -- the caller (`ui/views/chat.py`) decides what to show instead
+    until there's enough real traffic for this to be interesting.
+    """
+    path = Path(log_path)
+    if not path.exists():
+        return []
+    traces = load_traces(path)
+    if not traces:
+        return []
+    labels = load_labels(feedback_path) if feedback_path else {}
+
+    # normalized question text -> running stats, so "Docker fails" and "docker
+    # fails" (different casing/whitespace, same underlying question) count as one
+    groups: dict[str, dict] = {}
+    for index, trace in enumerate(traces):
+        key = trace.question.strip().lower()
+        if not key:
+            continue
+        label = labels.get(trace.trace_id)
+        is_bad_answer = is_abstention(trace.answer) or (label is not None and label.verdict == "fail")
+        group = groups.setdefault(key, {"display": trace.question, "count": 0, "order": index, "bad": False})
+        group["count"] += 1
+        group["order"] = index  # keep the most recent occurrence's position, for the recency tiebreak
+        group["display"] = trace.question  # keep the most recent phrasing/casing shown to the user
+        group["bad"] = group["bad"] or is_bad_answer
+
+    candidates = [g for g in groups.values() if not g["bad"]]
+    candidates.sort(key=lambda g: (g["count"], g["order"]), reverse=True)
+    return [g["display"] for g in candidates[:limit]]

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from app.models.schemas import RAGResult, RAGSource, RetrievedChunk
-from evals.chat_log import CHAT_RUN_ID, log_chat_turn
-from evals.schemas import load_traces
+from app.rag.service import NO_EVIDENCE_ANSWER
+from evals.chat_log import CHAT_RUN_ID, hot_issues, log_chat_turn
+from evals.schemas import HumanLabel, append_jsonl, load_traces
 
 
 def _result(**overrides):
@@ -72,3 +73,58 @@ def test_each_call_gets_a_distinct_query_id():
     trace1 = log_chat_turn("q", _result(), chat_model="m", top_k=None, log_path="/dev/null")
     trace2 = log_chat_turn("q", _result(), chat_model="m", top_k=None, log_path="/dev/null")
     assert trace1.query_id != trace2.query_id
+
+
+# ---- hot_issues -----------------------------------------------------------------------------
+
+
+def _log(log_path, question, **overrides):
+    return log_chat_turn(question, _result(**overrides), chat_model="m", top_k=5, log_path=log_path)
+
+
+def test_hot_issues_returns_empty_list_when_the_log_does_not_exist(tmp_path):
+    assert hot_issues(tmp_path / "missing.jsonl") == []
+
+
+def test_hot_issues_ranks_by_frequency_then_recency(tmp_path):
+    log_path = tmp_path / "log.jsonl"
+    _log(log_path, "docker fails")
+    _log(log_path, "network partition")
+    _log(log_path, "docker fails")  # asked twice -- should rank above a single-ask question
+
+    issues = hot_issues(log_path, limit=5)
+    assert issues[0] == "docker fails"
+    assert "network partition" in issues
+
+
+def test_hot_issues_groups_by_normalized_text_but_shows_the_most_recent_casing(tmp_path):
+    log_path = tmp_path / "log.jsonl"
+    _log(log_path, "Docker Fails")
+    _log(log_path, "docker fails")
+
+    assert hot_issues(log_path, limit=5) == ["docker fails"]  # counted once, most recent casing shown
+
+
+def test_hot_issues_excludes_a_question_whose_answer_declined(tmp_path):
+    log_path = tmp_path / "log.jsonl"
+    _log(log_path, "good question")
+    _log(log_path, "bad question", answer=NO_EVIDENCE_ANSWER)
+
+    assert hot_issues(log_path) == ["good question"]
+
+
+def test_hot_issues_excludes_a_question_with_thumbs_down_feedback(tmp_path):
+    log_path = tmp_path / "log.jsonl"
+    feedback_path = tmp_path / "feedback.jsonl"
+    _log(log_path, "good question")
+    disliked = _log(log_path, "disliked question")
+    append_jsonl(feedback_path, HumanLabel(trace_id=disliked.trace_id, verdict="fail", reason="wrong ticket"))
+
+    assert hot_issues(log_path, feedback_path=feedback_path) == ["good question"]
+
+
+def test_hot_issues_respects_the_limit(tmp_path):
+    log_path = tmp_path / "log.jsonl"
+    for i in range(8):
+        _log(log_path, f"question {i}")
+    assert len(hot_issues(log_path, limit=3)) == 3

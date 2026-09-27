@@ -33,6 +33,7 @@ class Settings:
     embedding_model: str
     chat_model: str
     judge_model: str
+    gate_model: str
     available_models: tuple[str, ...]
     chroma_persist_dir: str
     chroma_collection_name: str
@@ -48,6 +49,14 @@ def get_settings() -> Settings:
         embedding_model=os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
         chat_model=os.getenv("CHAT_MODEL", "gpt-4o-mini"),
         judge_model=os.getenv("JUDGE_MODEL", "gpt-4o-mini"),
+        # Model for RAGService's internal gates (prompt-injection check, query rewrite,
+        # relevance gate) -- deliberately independent of `chat_model`. These are cheap
+        # classification/short-JSON tasks, not the answer itself; without this, picking
+        # a stronger/slower chat_model for better answers would silently also tax all 3
+        # gate calls with that model's latency and cost for no quality benefit. Same
+        # separation `judge_model` already has from `chat_model`, just not previously
+        # applied to the live service's own internal gates.
+        gate_model=os.getenv("GATE_MODEL", "gpt-4o-mini"),
         available_models=tuple(
             m.strip() for m in os.getenv("AVAILABLE_MODELS", DEFAULT_AVAILABLE_MODELS).split(",") if m.strip()
         ),
