@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import textwrap
 import time
 from pathlib import Path
 from typing import Any
@@ -43,17 +44,15 @@ SUGGESTION_COUNT = 5
 # just shrinking by one every click.
 SUGGESTION_POOL_SIZE = SUGGESTION_COUNT * 3
 
-# Corner presets for the floating hot-issues button (see render_hot_issues) -- a
-# picker in the sidebar lets a user move it, since true click-and-drag isn't
-# reliably achievable (see that function's docstring). Each is a plain corner
-# offset, deliberately not centered on any edge, so the pulse animation's own
-# `scale(...)` transform never has to be combined with a positional `translate(...)`.
-HOT_ISSUES_POSITIONS = {
-    "Bottom right": {"bottom": "140px", "right": "80px"},
-    "Bottom left": {"bottom": "140px", "left": "80px"},
-    "Top right": {"top": "100px", "right": "80px"},
-    "Top left": {"top": "100px", "left": "80px"},
-}
+# Fixed corner offset for the floating hot-issues button (see render_hot_issues).
+# Not centered on any edge, so the ring's `scale(...)` animation never has to be
+# combined with a positional `translate(...)`.
+# Single line, deliberately -- an embedded newline here (even one with its own,
+# different indentation) breaks textwrap.dedent()'s common-leading-whitespace
+# calculation across the whole template it gets substituted into (see
+# render_hot_issues), silently leaving every line indented and re-triggering the
+# exact "shows up as literal text" bug dedent exists to prevent.
+HOT_ISSUES_POSITION_CSS = "bottom: 140px; right: 80px;"
 
 # Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
 PAINT_INTERVAL = 0.05
@@ -136,7 +135,7 @@ def get_suggested_questions() -> list[str]:
     return suggestions
 
 
-def render_hot_issues(position: str = "Bottom right") -> str | None:
+def render_hot_issues() -> str | None:
     """A floating 🔥 button (always available -- not just before the first
     question, unlike the earlier version of this panel) that opens a small
     popover of clickable "Recent Hot Issues" suggestions. Returns the clicked
@@ -154,17 +153,18 @@ def render_hot_issues(position: str = "Bottom right") -> str | None:
     A clicked suggestion is dropped from what THIS session sees again (backfilled
     from get_suggested_questions()'s bigger shared pool) -- asking a question
     once means you don't need it re-suggested, but it's still a legitimate
-    suggestion for anyone else's session.
+    suggestion for anyone else's session. Clicking one also shrinks the button
+    (and drops the attention-grabbing glow ring) for the rest of the session --
+    once it's actually been used, staying large/pulsing would just compete with
+    the answer for attention; it's still fully clickable at the smaller size to
+    reopen the popover and use it again.
 
-    `position` picks one of HOT_ISSUES_POSITIONS (see the sidebar picker) rather
-    than supporting real click-and-drag: Streamlit's `unsafe_allow_html` is
-    documented to not reliably execute injected `<script>` tags (a deliberate
-    security choice), and dragging needs real mouse-event JS -- a genuinely
-    draggable widget would need a full custom Streamlit component (its own JS
-    build, a Python<->JS bridge), a much bigger, separate piece of engineering
-    for a placement preference. A position picker solves the actual underlying
-    need (not stuck in one spot) without a fragile hack that might silently not
-    work in the browser.
+    Position is a fixed corner offset (HOT_ISSUES_POSITION_CSS), not user-picked
+    or draggable: Streamlit's `unsafe_allow_html` is documented to not reliably
+    execute injected `<script>` tags (a deliberate security choice), so real
+    click-and-drag would need a full custom Streamlit component (its own JS
+    build, a Python<->JS bridge) -- disproportionate engineering for a placement
+    preference, so one fixed spot it is.
 
     The floating position/styling is CSS keyed to the popover's own `key=`
     (Streamlit's documented hook for custom styling -- generates a
@@ -175,54 +175,61 @@ def render_hot_issues(position: str = "Bottom right") -> str | None:
     (not baked into the button's own background/box-shadow), sized and
     positioned identically to the button and animated with its own `scale()` --
     since it shares the button's exact center, growing it outward reads as an
-    expanding halo escaping from behind an otherwise plain white circle, visible
-    against any page background (a box-shadow glow on a white button would only
-    show up against a *darker* background than the glow itself).
+    expanding halo around the button rather than a static box-shadow.
+
+    The injected HTML/CSS is run through `textwrap.dedent` before being handed
+    to `st.markdown` -- without it, a plain triple-quoted string here carries
+    the same indentation as the surrounding Python code, and a line indented
+    4+ spaces is exactly what Markdown treats as a literal code block: the
+    `<div>` rendered as visible escaped text on the page instead of being
+    parsed as HTML (a real bug this fixes, not just a style nit).
     """
     dismissed = st.session_state.setdefault("_dismissed_hot_issues", set())
     suggestions = [q for q in get_suggested_questions() if q.strip().lower() not in dismissed][:SUGGESTION_COUNT]
     if not suggestions:
         return None
-    offsets = HOT_ISSUES_POSITIONS.get(position, HOT_ISSUES_POSITIONS["Bottom right"])
-    position_css = "\n".join(f"{side}: {value};" for side, value in offsets.items())
+    minimized = st.session_state.get("_hot_issues_minimized", False)
+    size = 30 if minimized else 52
+    font_size = 14 if minimized else 22
     st.markdown(
-        f"""
+        textwrap.dedent(f"""
         <style>
         @keyframes hot-issues-ring {{
-            0%   {{ transform: scale(1);   opacity: 0.55; }}
-            100% {{ transform: scale(2.6); opacity: 0; }}
+            0%   {{ transform: scale(1);   opacity: 0.4; }}
+            100% {{ transform: scale(2.2); opacity: 0; }}
         }}
         .hot-issues-ring {{
             position: fixed;
-            {position_css}
-            width: 64px;
-            height: 64px;
+            {HOT_ISSUES_POSITION_CSS}
+            width: {size}px;
+            height: {size}px;
             border-radius: 50%;
-            background: radial-gradient(circle, rgba(255, 87, 34, 0.65) 0%, rgba(255, 45, 85, 0) 72%);
-            animation: hot-issues-ring 1.8s ease-out infinite;
+            background: radial-gradient(circle, rgba(255, 122, 61, 0.5) 0%, rgba(255, 122, 61, 0) 72%);
+            animation: {"none" if minimized else "hot-issues-ring 1.8s ease-out infinite"};
             z-index: 998;
             pointer-events: none;
         }}
         div[class*="st-key-hot_issues_fab"] {{
             position: fixed;
-            {position_css}
+            {HOT_ISSUES_POSITION_CSS}
             z-index: 999;
         }}
         div[class*="st-key-hot_issues_fab"] button {{
             border-radius: 50%;
-            width: 64px;
-            height: 64px;
-            font-size: 30px;
-            border: 1px solid rgba(0, 0, 0, 0.08);
-            background: white;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            width: {size}px;
+            height: {size}px;
+            font-size: {font_size}px;
+            border: none;
+            background: linear-gradient(135deg, #ff9142, #ff5f6d);
+            color: white;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
         }}
         div[class*="st-key-hot_issues_fab"] button:hover {{
-            box-shadow: 0 2px 14px rgba(0, 0, 0, 0.3);
+            filter: brightness(1.08);
         }}
         </style>
         <div class="hot-issues-ring"></div>
-        """,
+        """),
         unsafe_allow_html=True,
     )
     clicked = None
@@ -233,6 +240,7 @@ def render_hot_issues(position: str = "Bottom right") -> str | None:
             if st.button(label, key=f"hot_issue_{index}", use_container_width=True):
                 clicked = question
                 dismissed.add(question.strip().lower())
+                st.session_state["_hot_issues_minimized"] = True
     return clicked
 
 
@@ -357,14 +365,12 @@ with st.sidebar:
             st.json(rag_service.retriever.vector_store.collection_info())
         except Exception as exc:  # e.g. collection not created yet
             st.error(f"Could not read collection info: {exc}")
-    st.header("🔥 Hot issues button")
-    hot_issues_position = st.selectbox("Position", list(HOT_ISSUES_POSITIONS), key="hot_issues_position")
 
 if "history" not in st.session_state:
     st.session_state.history = []
 
 # Always available, not just before the first question (see render_hot_issues).
-suggested_question = render_hot_issues(hot_issues_position)
+suggested_question = render_hot_issues()
 
 for turn in st.session_state.history:
     with st.chat_message("user"):

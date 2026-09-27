@@ -287,6 +287,25 @@ def test_hot_issues_panel_shows_seed_suggestions_on_a_fresh_deployment(tmp_path)
     assert "network partition issue" in labels
 
 
+def test_hot_issues_injected_html_never_shows_up_as_literal_text(tmp_path):
+    # Regression test: a triple-quoted f-string indented to match the surrounding
+    # Python code carries that same indentation into the actual string content --
+    # and a line indented 4+ spaces is exactly what Markdown treats as a literal
+    # code block, so the <div> rendered as visible escaped text on the page
+    # instead of being parsed as HTML. textwrap.dedent() fixes it; this pins the
+    # fix by asserting every non-blank line of the injected markup starts at
+    # column 0 (no leading whitespace at all, not just "less than 4 spaces").
+    _write_seed_dataset(tmp_path, ["docker fails to start"])
+    at = _chat()
+    injected = next(m for m in at.markdown if "hot-issues-ring" in m.value)
+    lines = [line for line in injected.value.splitlines() if line.strip()]
+    # The property that actually matters: the tags that OPEN an HTML block --
+    # nested CSS property lines inside an already-open <style> block are fine to
+    # be indented, only the block-starting lines themselves must not be.
+    assert lines[0] == "<style>"
+    assert lines[-1] == '<div class="hot-issues-ring"></div>'
+
+
 def test_clicking_a_hot_issue_submits_it_as_a_question(tmp_path):
     _write_seed_dataset(tmp_path, ["docker fails to start"])
     at = _chat()
@@ -336,6 +355,17 @@ def test_clicking_a_hot_issue_drops_it_and_backfills_from_the_rest_of_the_pool(t
     labels = [b.label for b in at.button]
     assert "docker fails to start" not in labels  # dropped, already asked this session
     assert "network partition issue" in labels  # the other one is still offered
+
+
+def test_clicking_a_hot_issue_minimizes_the_button(tmp_path):
+    # So the button stops competing for attention with the answer once it's
+    # actually been used -- still fully clickable at the smaller size afterward.
+    _write_seed_dataset(tmp_path, ["docker fails to start"])
+    at = _chat()
+    assert not at.session_state.get("_hot_issues_minimized")
+
+    _button(at, "docker fails to start").click().run()
+    assert at.session_state["_hot_issues_minimized"] is True
 
 
 def test_hot_issues_button_does_not_appear_with_no_seed_dataset_and_no_chat_history():
