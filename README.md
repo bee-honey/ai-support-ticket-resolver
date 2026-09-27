@@ -30,6 +30,8 @@ Requires Python 3.11+; see [Setup](#setup) if `pip install` fails building `toke
 - [Running Streamlit](#running-streamlit)
 - [Running Tests](#running-tests)
 - [Evaluation Framework](#evaluation-framework)
+- [Guardrails](#guardrails)
+- [The Self-Improvement Loop](#the-self-improvement-loop)
 - [Adjusting for the Real Mesos CSV](#adjusting-for-the-real-mesos-csv)
 - [Phase 2 (Not Implemented)](#phase-2-not-implemented)
 - [Assumptions](#assumptions)
@@ -308,6 +310,21 @@ What is measured:
 | Performance | latency (total / retrieval / generation), tokens, tool calls (empty until an agent exists) | measured |
 
 Notes: query kinds are `answerable`, `filtered` (asked with a metadata filter) and `unanswerable` (off-topic; the right behaviour is to abstain). Generated queries tend to echo their source ticket, so `retrieval_hit` on a generated set is optimistic until you reword some. `evals.run` executes queries one at a time so latency isn't skewed by concurrency; judging is parallel. `evals.generate_queries` refuses to overwrite an existing dataset without `--force`.
+
+## Guardrails
+
+Two input guardrails run before retrieval on every question (`app/rag/guardrails.py`, `RAGService._is_prompt_injection`):
+
+- **Prompt-injection detection** — a cheap, separate LLM call (same design as the relevance gate) blocks attempts to override instructions, extract the system prompt, or make the assistant act outside its support-assistant role. Fails open on error, same as every other gate in this pipeline.
+- **PII redaction** — deterministic regex (email/phone/credit-card shapes) applied to the question before it's embedded, sent to any LLM, or logged. Deliberately does **not** touch IP addresses, since real Mesos tickets legitimately contain them.
+
+Deliberately scoped, not a full copy of a textbook guardrail taxonomy — see [SELF_IMPROVEMENT_LOOP.md § Case Study 3](docs/SELF_IMPROVEMENT_LOOP.md#case-study-3-guardrails--feedback) for what was left out and why, and a real, documented gap (the historical ticket corpus itself still contains real PII that a cited chunk can surface — input redaction doesn't fix that).
+
+## The Self-Improvement Loop
+
+> Full write-up with real before/after numbers from actual eval runs: [docs/SELF_IMPROVEMENT_LOOP.md](docs/SELF_IMPROVEMENT_LOOP.md).
+
+Every non-trivial change to this project (the relevance gate, query rewriting, the guardrails above) followed the same discipline: measure a real problem on the eval set, build a fix, measure again on the same set, and treat an unexpected result as something to investigate rather than rationalize. Live usage feeds the same loop: every chat answer is logged (`evals/chat_logs/log.jsonl`) and every 👍/👎 given in the chat UI is captured as a `HumanLabel` (`evals/labels/chat_feedback.jsonl`) — kept separate from the curated SME labels used for judge alignment, but surfaced in its own **💬 Feedback** tab, sorted worst-first, so a real recurring complaint has a clear path into becoming a new eval-set case.
 
 ## Adjusting for the Real Mesos CSV
 
