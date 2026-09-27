@@ -201,6 +201,20 @@ def test_thumbs_down_shows_a_reason_box_and_saves_a_fail_label():
     assert label.reason == "cited the wrong ticket"
 
 
+def test_a_confirmation_is_shown_after_submitting_feedback_or_a_reason():
+    # Without this, pressing Enter in the reason box gave no visible sign anything
+    # happened, so it looked broken and invited pressing Enter again and again.
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
+    assert not any("Thanks for the feedback" in c.value for c in at.caption)
+
+    at.feedback[0].set_value(0).run()
+    assert any("Thanks for the feedback" in c.value for c in at.caption)
+
+    at.text_input[0].set_value("cited the wrong ticket").run()
+    assert any("Thanks for the feedback" in c.value for c in at.caption)
+
+
 def test_rerunning_without_changing_feedback_does_not_duplicate_the_label(tmp_path):
     at = _chat()
     at.chat_input[0].set_value("q").run()

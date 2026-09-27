@@ -105,7 +105,10 @@ def render_feedback(trace_id: str) -> None:
 
     Guarded against re-appending the same feedback on every unrelated rerun (a new
     question, a filter change, ...): only writes when the (sentiment, reason) pair
-    for this trace_id actually changed since the last time this ran.
+    for this trace_id actually changed since the last time this ran. A confirmation
+    caption is shown every time regardless (even on a rerun where nothing changed) --
+    without it, pressing Enter in the reason box gives no visible sign it worked, so
+    it's easy to end up clicking Enter repeatedly wondering if anything happened.
     """
     sentiment = st.feedback("thumbs", key=f"fb_{trace_id}")
     if sentiment is None:
@@ -115,21 +118,23 @@ def render_feedback(trace_id: str) -> None:
         reason = st.text_input(
             "What was wrong?",
             key=f"fb_reason_{trace_id}",
-            placeholder="What was wrong? (optional)",
+            placeholder="What was wrong? (optional, press Enter to save)",
             label_visibility="collapsed",
         )
     saved = st.session_state.setdefault("_feedback_saved", {})
     current = (sentiment, reason.strip())
+    if saved.get(trace_id) != current:
+        try:
+            append_jsonl(
+                CHAT_FEEDBACK_PATH,
+                HumanLabel(trace_id=trace_id, verdict="pass" if sentiment == 1 else "fail", reason=reason.strip()),
+            )
+        except Exception:
+            pass  # feedback is a bonus signal -- a write failure shouldn't surface as a chat error
+        else:
+            saved[trace_id] = current
     if saved.get(trace_id) == current:
-        return
-    try:
-        append_jsonl(
-            CHAT_FEEDBACK_PATH,
-            HumanLabel(trace_id=trace_id, verdict="pass" if sentiment == 1 else "fail", reason=reason.strip()),
-        )
-    except Exception:
-        return  # feedback is a bonus signal -- a write failure shouldn't surface as a chat error
-    saved[trace_id] = current
+        st.caption("✅ Thanks for the feedback!")
 
 
 st.caption("Describe a support problem. Answers are grounded in historical tickets and documentation.")
