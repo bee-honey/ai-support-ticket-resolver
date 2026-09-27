@@ -266,6 +266,17 @@ def _write_seed_dataset(tmp_path: Path, questions: list[str]) -> None:
     )
 
 
+def _hot_issues_popover(at: AppTest):
+    # st.popover isn't exposed via a flat at.button/at.popover list -- it's a
+    # container Block, found by the key= given to it (AppTest raises KeyError if
+    # nothing in the tree used that key this run, e.g. render_hot_issues() returned
+    # early with no suggestions to show).
+    try:
+        return at.get_by_key("hot_issues_fab")
+    except KeyError:
+        return None
+
+
 def test_hot_issues_panel_shows_seed_suggestions_on_a_fresh_deployment(tmp_path):
     # No chat activity logged yet -- falls back entirely to the SME test set.
     _write_seed_dataset(tmp_path, ["docker fails to start", "network partition issue"])
@@ -286,15 +297,49 @@ def test_clicking_a_hot_issue_submits_it_as_a_question(tmp_path):
     assert at.session_state.history[0]["question"] == "docker fails to start"
 
 
-def test_hot_issues_panel_disappears_once_a_conversation_has_started():
+def test_hot_issues_button_remains_available_after_a_conversation_has_started(tmp_path):
+    # Regression test for the reported bug: the panel used to only be shown before
+    # the first question, so clicking a suggestion appeared to silently do nothing
+    # on any later turn (it had already been hidden). It must stay available and
+    # clickable for the whole session now, not just the first turn.
+    _write_seed_dataset(tmp_path, ["docker fails to start"])
     at = _chat()
     at.chat_input[0].set_value("some other question").run()
+    assert not at.exception
+    assert len(at.session_state.history) == 1
+    assert _hot_issues_popover(at) is not None  # the floating trigger is still there
+
+
+def test_clicking_a_hot_issue_works_on_a_second_turn_too(tmp_path):
+    _write_seed_dataset(tmp_path, ["docker fails to start"])
+    at = _chat()
+    at.chat_input[0].set_value("first question").run()
+    assert len(at.session_state.history) == 1
+
+    _button(at, "docker fails to start").click().run()
+    assert not at.exception
+    assert FakeService.last_call[0] == "docker fails to start"
+    assert len(at.session_state.history) == 2
+    assert at.session_state.history[1]["question"] == "docker fails to start"
+
+
+def test_clicking_a_hot_issue_drops_it_and_backfills_from_the_rest_of_the_pool(tmp_path):
+    _write_seed_dataset(tmp_path, ["docker fails to start", "network partition issue"])
+    at = _chat()
+    assert "docker fails to start" in [b.label for b in at.button]
+
+    _button(at, "docker fails to start").click().run()
+    # the click is recorded (added to the dismissed set) during this same run, but the
+    # button list for THIS run was already decided before that -- the exclusion only
+    # shows up on the next rerun, same as the existing feedback-state tests below.
+    at.run()
     labels = [b.label for b in at.button]
-    assert not any("docker" in label.lower() for label in labels)
+    assert "docker fails to start" not in labels  # dropped, already asked this session
+    assert "network partition issue" in labels  # the other one is still offered
 
 
-def test_hot_issues_panel_does_not_appear_with_no_seed_dataset_and_no_chat_history():
+def test_hot_issues_button_does_not_appear_with_no_seed_dataset_and_no_chat_history():
     # No evals/datasets/team_test_cases.jsonl in this temp EVALS_DIR at all.
     at = _chat()
     assert not at.exception
-    assert "🔥 Recent Hot Issues" not in " ".join(m.value for m in at.markdown)
+    assert _hot_issues_popover(at) is None

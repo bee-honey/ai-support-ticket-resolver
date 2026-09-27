@@ -37,6 +37,23 @@ CHAT_FEEDBACK_PATH = EVALS_DIR / "labels/chat_feedback.jsonl"
 # SME-authored questions, not placeholder text.
 SEED_SUGGESTIONS_DATASET = EVALS_DIR / "datasets/team_test_cases.jsonl"
 SUGGESTION_COUNT = 5
+# get_suggested_questions() fetches a bigger pool than SUGGESTION_COUNT so that
+# render_hot_issues() can drop a question once it's been clicked this session and
+# still backfill back up to SUGGESTION_COUNT from what's left, instead of the list
+# just shrinking by one every click.
+SUGGESTION_POOL_SIZE = SUGGESTION_COUNT * 3
+
+# Corner presets for the floating hot-issues button (see render_hot_issues) -- a
+# picker in the sidebar lets a user move it, since true click-and-drag isn't
+# reliably achievable (see that function's docstring). Each is a plain corner
+# offset, deliberately not centered on any edge, so the pulse animation's own
+# `scale(...)` transform never has to be combined with a positional `translate(...)`.
+HOT_ISSUES_POSITIONS = {
+    "Bottom right": {"bottom": "140px", "right": "80px"},
+    "Bottom left": {"bottom": "140px", "left": "80px"},
+    "Top right": {"top": "100px", "right": "80px"},
+    "Top left": {"top": "100px", "left": "80px"},
+}
 
 # Repaint the streaming answer/metrics at most this often (seconds); a repaint per token is needless churn.
 PAINT_INTERVAL = 0.05
@@ -91,20 +108,26 @@ def _seed_suggestions() -> list[str]:
 
 @st.cache_data(ttl=60)
 def get_suggested_questions() -> list[str]:
-    """Up to SUGGESTION_COUNT "Recent Hot Issues": real, most-asked questions from
-    live chat traffic (evals.chat_log.hot_issues), topped up with SME-authored
-    example questions when there isn't enough real traffic yet -- so the panel
-    starts useful on a fresh deployment and becomes more "real" as usage grows.
-    A short ttl (not the 300s the metadata caches above use) since this is meant
-    to feel current, not a slowly-changing reference list.
+    """Up to SUGGESTION_POOL_SIZE "Recent Hot Issues" candidates: real, most-asked
+    questions from live chat traffic (evals.chat_log.hot_issues), topped up with
+    SME-authored example questions when there isn't enough real traffic yet -- so
+    the panel starts useful on a fresh deployment and becomes more "real" as usage
+    grows. A short ttl (not the 300s the metadata caches above use) since this is
+    meant to feel current, not a slowly-changing reference list.
+
+    Deliberately a bigger pool than SUGGESTION_COUNT (what's actually shown at
+    once) -- see render_hot_issues, which drops a question from what it displays
+    once it's been clicked this session and backfills from the rest of this pool,
+    shared (and cached) across sessions; only which ones a given session has
+    already dismissed is per-session.
     """
     try:
-        suggestions = hot_issues(CHAT_LOG_PATH, CHAT_FEEDBACK_PATH, limit=SUGGESTION_COUNT)
+        suggestions = hot_issues(CHAT_LOG_PATH, CHAT_FEEDBACK_PATH, limit=SUGGESTION_POOL_SIZE)
     except Exception:
         suggestions = []
     seen = {q.strip().lower() for q in suggestions}
     for question in _seed_suggestions():
-        if len(suggestions) >= SUGGESTION_COUNT:
+        if len(suggestions) >= SUGGESTION_POOL_SIZE:
             break
         key = question.strip().lower()
         if key not in seen:
@@ -113,21 +136,103 @@ def get_suggested_questions() -> list[str]:
     return suggestions
 
 
-def render_hot_issues() -> str | None:
-    """A clickable "Recent Hot Issues" panel, shown only before the first question
-    in a session (like a chat app's starter prompts -- once a real conversation is
-    underway, this would just be clutter above it). Returns the clicked question's
-    text this run (to be treated exactly like a typed-and-submitted question), or
-    None if nothing was clicked."""
-    suggestions = get_suggested_questions()
+def render_hot_issues(position: str = "Bottom right") -> str | None:
+    """A floating 🔥 button (always available -- not just before the first
+    question, unlike the earlier version of this panel) that opens a small
+    popover of clickable "Recent Hot Issues" suggestions. Returns the clicked
+    question's text this run (to be treated exactly like a typed-and-submitted
+    question), or None if nothing was clicked.
+
+    Click-to-open, not hover-to-open: `st.popover`'s content is mounted/unmounted
+    via Streamlit's own internal state on click, not shown/hidden by CSS, so a
+    pure-CSS `:hover` override can't force it open -- and hover has no equivalent
+    on touch devices anyway, so click is the more robust choice, not just the
+    easier one. `st.chat_input` also has no API to pre-fill it with text, so
+    clicking a suggestion submits it directly (generates a response immediately)
+    rather than "inserting then waiting for Enter", which isn't achievable here.
+
+    A clicked suggestion is dropped from what THIS session sees again (backfilled
+    from get_suggested_questions()'s bigger shared pool) -- asking a question
+    once means you don't need it re-suggested, but it's still a legitimate
+    suggestion for anyone else's session.
+
+    `position` picks one of HOT_ISSUES_POSITIONS (see the sidebar picker) rather
+    than supporting real click-and-drag: Streamlit's `unsafe_allow_html` is
+    documented to not reliably execute injected `<script>` tags (a deliberate
+    security choice), and dragging needs real mouse-event JS -- a genuinely
+    draggable widget would need a full custom Streamlit component (its own JS
+    build, a Python<->JS bridge), a much bigger, separate piece of engineering
+    for a placement preference. A position picker solves the actual underlying
+    need (not stuck in one spot) without a fragile hack that might silently not
+    work in the browser.
+
+    The floating position/styling is CSS keyed to the popover's own `key=`
+    (Streamlit's documented hook for custom styling -- generates a
+    `st-key-<key>` class on its wrapper), not to any internal/undocumented DOM
+    structure -- more likely to keep working across Streamlit versions, but
+    still worth eyeballing locally, since exact pixel placement can shift with
+    the app's own layout. The glow is a separate fixed-position ring element
+    (not baked into the button's own background/box-shadow), sized and
+    positioned identically to the button and animated with its own `scale()` --
+    since it shares the button's exact center, growing it outward reads as an
+    expanding halo escaping from behind an otherwise plain white circle, visible
+    against any page background (a box-shadow glow on a white button would only
+    show up against a *darker* background than the glow itself).
+    """
+    dismissed = st.session_state.setdefault("_dismissed_hot_issues", set())
+    suggestions = [q for q in get_suggested_questions() if q.strip().lower() not in dismissed][:SUGGESTION_COUNT]
     if not suggestions:
         return None
-    st.markdown("**🔥 Recent Hot Issues**")
+    offsets = HOT_ISSUES_POSITIONS.get(position, HOT_ISSUES_POSITIONS["Bottom right"])
+    position_css = "\n".join(f"{side}: {value};" for side, value in offsets.items())
+    st.markdown(
+        f"""
+        <style>
+        @keyframes hot-issues-ring {{
+            0%   {{ transform: scale(1);   opacity: 0.55; }}
+            100% {{ transform: scale(2.6); opacity: 0; }}
+        }}
+        .hot-issues-ring {{
+            position: fixed;
+            {position_css}
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(255, 87, 34, 0.65) 0%, rgba(255, 45, 85, 0) 72%);
+            animation: hot-issues-ring 1.8s ease-out infinite;
+            z-index: 998;
+            pointer-events: none;
+        }}
+        div[class*="st-key-hot_issues_fab"] {{
+            position: fixed;
+            {position_css}
+            z-index: 999;
+        }}
+        div[class*="st-key-hot_issues_fab"] button {{
+            border-radius: 50%;
+            width: 64px;
+            height: 64px;
+            font-size: 30px;
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            background: white;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+        }}
+        div[class*="st-key-hot_issues_fab"] button:hover {{
+            box-shadow: 0 2px 14px rgba(0, 0, 0, 0.3);
+        }}
+        </style>
+        <div class="hot-issues-ring"></div>
+        """,
+        unsafe_allow_html=True,
+    )
     clicked = None
-    for index, question in enumerate(suggestions):
-        label = question if len(question) <= 80 else question[:77] + "..."
-        if st.button(label, key=f"hot_issue_{index}", use_container_width=True):
-            clicked = question
+    with st.popover("🔥", key="hot_issues_fab", help="Recent Hot Issues"):
+        st.markdown("**🔥 Recent Hot Issues**")
+        for index, question in enumerate(suggestions):
+            label = question if len(question) <= 80 else question[:77] + "..."
+            if st.button(label, key=f"hot_issue_{index}", use_container_width=True):
+                clicked = question
+                dismissed.add(question.strip().lower())
     return clicked
 
 
@@ -252,11 +357,14 @@ with st.sidebar:
             st.json(rag_service.retriever.vector_store.collection_info())
         except Exception as exc:  # e.g. collection not created yet
             st.error(f"Could not read collection info: {exc}")
+    st.header("🔥 Hot issues button")
+    hot_issues_position = st.selectbox("Position", list(HOT_ISSUES_POSITIONS), key="hot_issues_position")
 
 if "history" not in st.session_state:
     st.session_state.history = []
 
-suggested_question = render_hot_issues() if not st.session_state.history else None
+# Always available, not just before the first question (see render_hot_issues).
+suggested_question = render_hot_issues(hot_issues_position)
 
 for turn in st.session_state.history:
     with st.chat_message("user"):
