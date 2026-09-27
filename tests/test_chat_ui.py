@@ -196,23 +196,50 @@ def test_thumbs_down_shows_a_reason_box_and_saves_a_fail_label():
     label = list(labels.values())[0]
     assert label.verdict == "fail" and label.reason == ""
 
-    at.text_input[0].set_value("cited the wrong ticket").run()
+    at.text_input[0].set_value("cited the wrong ticket")  # queued -- forms don't commit until submitted
+    _button(at, "Submit").click().run()
     label = list(load_labels(_labels_path(at)).values())[0]
     assert label.reason == "cited the wrong ticket"
 
 
-def test_a_confirmation_is_shown_after_submitting_feedback_or_a_reason():
-    # Without this, pressing Enter in the reason box gave no visible sign anything
-    # happened, so it looked broken and invited pressing Enter again and again.
+def test_a_confirmation_is_shown_immediately_for_thumbs_up():
     at = _chat()
     at.chat_input[0].set_value("q").run()
-    assert not any("Thanks for the feedback" in c.value for c in at.caption)
+    at.feedback[0].set_value(1).run()
+    assert any("Thanks for the feedback" in c.value for c in at.caption)
 
+
+def test_the_reason_boxs_own_first_render_does_not_look_like_a_submission():
+    # Regression test: right after clicking thumbs-down, the reason box appearing
+    # (untouched, value="") must not look like feedback was auto-submitted --
+    # that's exactly the bug this form wrapping fixes. No "Thanks" until the form
+    # is actually submitted; an inviting, non-final caption shows up to that point.
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
     at.feedback[0].set_value(0).run()
+
+    assert not any("Thanks for the feedback" in c.value for c in at.caption)
+    assert any("add a reason" in c.value for c in at.caption)
+
+    at.text_input[0].set_value("cited the wrong ticket")
+    _button(at, "Submit").click().run()
     assert any("Thanks for the feedback" in c.value for c in at.caption)
 
-    at.text_input[0].set_value("cited the wrong ticket").run()
+
+def test_the_confirmation_stays_correct_across_an_unrelated_rerun():
+    # A later, unrelated rerun (e.g. changing a filter) must not re-show the
+    # "add a reason" prompt for a turn whose reason was already submitted, and
+    # must not silently blank out an already-saved reason either.
+    at = _chat()
+    at.chat_input[0].set_value("q").run()
+    at.feedback[0].set_value(0).run()
+    at.text_input[0].set_value("cited the wrong ticket")
+    _button(at, "Submit").click().run()
+
+    at.multiselect[0].select("docker").run()  # unrelated rerun
     assert any("Thanks for the feedback" in c.value for c in at.caption)
+    label = list(load_labels(_labels_path(at)).values())[0]
+    assert label.reason == "cited the wrong ticket"  # not clobbered back to empty
 
 
 def test_rerunning_without_changing_feedback_does_not_duplicate_the_label(tmp_path):

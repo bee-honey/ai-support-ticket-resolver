@@ -96,6 +96,20 @@ def render_source(source: RAGSource) -> None:
         st.caption(details)
 
 
+def _save_feedback(trace_id: str, sentiment: int, reason: str, saved: dict[str, tuple[int, str]]) -> None:
+    current = (sentiment, reason.strip())
+    if saved.get(trace_id) == current:
+        return
+    try:
+        append_jsonl(
+            CHAT_FEEDBACK_PATH,
+            HumanLabel(trace_id=trace_id, verdict="pass" if sentiment == 1 else "fail", reason=reason.strip()),
+        )
+    except Exception:
+        return  # feedback is a bonus signal -- a write failure shouldn't surface as a chat error
+    saved[trace_id] = current
+
+
 def render_feedback(trace_id: str) -> None:
     """Thumbs up/down on one answer -> a `HumanLabel` keyed to `trace_id`, the same
     schema the eval framework's SME labels use (see evals/label.py) -- but written to
@@ -103,38 +117,43 @@ def render_feedback(trace_id: str) -> None:
     usage, not the calibration-grade ground truth `evals/align.py` compares judges
     against. Kept out of that comparison rather than silently mixed into it.
 
-    Guarded against re-appending the same feedback on every unrelated rerun (a new
-    question, a filter change, ...): only writes when the (sentiment, reason) pair
-    for this trace_id actually changed since the last time this ran. A confirmation
-    caption is shown every time regardless (even on a rerun where nothing changed) --
-    without it, pressing Enter in the reason box gives no visible sign it worked, so
-    it's easy to end up clicking Enter repeatedly wondering if anything happened.
+    Thumbs up saves and confirms immediately -- there's nothing more to ask. Thumbs
+    down saves the bare verdict right away too (a real signal even if no reason ever
+    follows), but the optional reason box lives inside a form: a bare `st.text_input`
+    reruns the script (and, before this fix, saved + confirmed) on its own very
+    first, untouched render, which looked exactly like feedback being auto-submitted
+    before there was any chance to type something. A form only commits its
+    contents on an explicit Submit (or Enter while focused inside it), so simply
+    seeing the box appear no longer looks like a submission.
     """
     sentiment = st.feedback("thumbs", key=f"fb_{trace_id}")
     if sentiment is None:
         return
-    reason = ""
-    if sentiment == 0:  # thumbs down -- ask why; that's the actionable half of this signal
-        reason = st.text_input(
-            "What was wrong?",
-            key=f"fb_reason_{trace_id}",
-            placeholder="What was wrong? (optional, press Enter to save)",
-            label_visibility="collapsed",
-        )
+
     saved = st.session_state.setdefault("_feedback_saved", {})
-    current = (sentiment, reason.strip())
-    if saved.get(trace_id) != current:
-        try:
-            append_jsonl(
-                CHAT_FEEDBACK_PATH,
-                HumanLabel(trace_id=trace_id, verdict="pass" if sentiment == 1 else "fail", reason=reason.strip()),
-            )
-        except Exception:
-            pass  # feedback is a bonus signal -- a write failure shouldn't surface as a chat error
-        else:
-            saved[trace_id] = current
-    if saved.get(trace_id) == current:
+
+    if sentiment == 1:
+        _save_feedback(trace_id, sentiment, "", saved)
+        if trace_id in saved:
+            st.caption("✅ Thanks for the feedback!")
+        return
+
+    if trace_id not in saved:  # first time seeing this thumbs-down: save the bare verdict once
+        _save_feedback(trace_id, sentiment, "", saved)
+
+    with st.form(key=f"fb_form_{trace_id}", border=False):
+        reason = st.text_input(
+            "What was wrong?", placeholder="What was wrong? (optional)", label_visibility="collapsed"
+        )
+        submitted = st.form_submit_button("Submit")
+    if submitted:
+        _save_feedback(trace_id, sentiment, reason, saved)
+
+    current = saved.get(trace_id)
+    if current and current[1]:
         st.caption("✅ Thanks for the feedback!")
+    elif current is not None:
+        st.caption("Got it — add a reason above if you'd like.")
 
 
 st.caption("Describe a support problem. Answers are grounded in historical tickets and documentation.")
