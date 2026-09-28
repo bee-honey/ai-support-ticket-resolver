@@ -4,6 +4,15 @@ A RAG-powered assistant that searches historical support tickets and support doc
 
 > **Status:** RAG ingestion pipeline, a 3-page Streamlit app (Resolver chat, a Tickets browser, and Evals), input guardrails, and a full evaluation framework with a live self-improvement loop. See [Phase 2](#phase-2-not-implemented) for what's deliberately deferred.
 
+## Capstone Submission
+
+- **Live demo:** https://ai-support-ticket-resolver-98jrlkvnj7jjfqumtdzuus.streamlit.app
+- **Demo video:** https://notebook.google.com/notebook/76da8c00-2761-4305-b66e-9ea2bae449f0/artifact/9a40e53a-72c5-48db-b3a7-b0da40bb476b
+- **System design doc:** [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md)
+- **Instructor / grading guide:** [docs/INSTRUCTOR_GUIDE.md](docs/INSTRUCTOR_GUIDE.md) (also available as a [PDF](docs/INSTRUCTOR_GUIDE.pdf))
+
+**Team:** Priyanka · Shubham Kumar · Mahaveer · Naveen Keerthy
+
 ## Quickstart
 
 ```bash
@@ -20,6 +29,7 @@ Requires Python 3.11+; see [Setup](#setup) if `pip install` fails building `toke
 
 ## Table of Contents
 
+- [Capstone Submission](#capstone-submission)
 - [Quickstart](#quickstart)
 - [Overview](#overview)
 - [Phase 1 Scope](#phase-1-scope)
@@ -71,6 +81,8 @@ The Streamlit app (`ui/resolver_support.py`) has three pages: **Resolver** (the 
 Deliberately **not** built: FastAPI, a ticket database (PostgreSQL/SQLite), LangGraph, agents, MCP, duplicate/conflict detection. See [Phase 2](#phase-2-not-implemented).
 
 ## Architecture
+
+> For the full design write-up (goals/non-goals, design decisions and rejected alternatives, data design, non-functional characteristics), see [docs/SYSTEM_DESIGN.md](docs/SYSTEM_DESIGN.md).
 
 ```mermaid
 flowchart TD
